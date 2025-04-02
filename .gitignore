@@ -1,5 +1,25 @@
+# Generated content and large files
 **/__pycache__
-
 data/
 log/
+debug_visualizations/
+analysis_results/
+tests/test_data/
 pretrain_model/
+
+# Model weights and checkpoints
+*.pth
+models/
+checkpoints/
+
+# Test outputs
+*.csv
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.npy
+
+# Logs
+*.log
+logs/

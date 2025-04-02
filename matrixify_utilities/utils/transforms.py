@@ -66,72 +66,87 @@ def transform_preds(coords, center, scale, input_size):
     return target_coords
 
 def transform_parsing(pred, center, scale, width, height, input_size):
-
-    trans = get_affine_transform(center, scale, 0, input_size, inv=1)
-    target_pred = cv2.warpAffine(
-            pred,
-            trans,
-            (int(width), int(height)), #(int(width), int(height)),
-            flags=cv2.INTER_NEAREST,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=(0))
-
+    """Transform parsing result to original image size using direct resize."""
+    # Simple resize to target dimensions
+    target_pred = cv2.resize(
+        pred,
+        (width, height),
+        interpolation=cv2.INTER_NEAREST  # Use NEAREST for label maps
+    )
+    
     return target_pred
 
 def transform_logits(logits, center, scale, width, height, input_size):
-
-    trans = get_affine_transform(center, scale, 0, input_size, inv=1)
+    """Transform logits according to image original size."""
+    if isinstance(input_size, list):
+        input_size = input_size
+    else:
+        input_size = [input_size, input_size]
+    
+    # Get transform matrix
+    trans = get_affine_transform(center, scale, 0, (height, width), inv=1)
+    
+    # Transform each channel
     channel = logits.shape[2]
     target_logits = []
+    
+    print(f"\nLogits Transform Debug:")
+    print(f"Input shape: {logits.shape}")
+    print(f"Target size: ({height}, {width})")
+    
     for i in range(channel):
-        target_logit = cv2.warpAffine(
-            logits[:,:,i],
-            trans,
-            (int(width), int(height)), #(int(width), int(height)),
-            flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=(0))
+        target_logit = cv2.resize(
+            logits[:, :, i],
+            (width, height),
+            interpolation=cv2.INTER_LINEAR
+        )
         target_logits.append(target_logit)
-    target_logits = np.stack(target_logits,axis=2)
-
+    
+    # Stack channels
+    target_logits = np.stack(target_logits, axis=2)
+    
     return target_logits
 
 
 def get_affine_transform(center,
-                         scale,
-                         rot,
-                         output_size,
-                         shift=np.array([0, 0], dtype=np.float32),
-                         inv=0):
+                        scale,
+                        rot,
+                        output_size,
+                        shift=np.array([0, 0], dtype=np.float32),
+                        inv=0):
+    """Get affine transform matrix."""
     if not isinstance(scale, np.ndarray) and not isinstance(scale, list):
-        print(scale)
         scale = np.array([scale, scale])
 
-    scale_tmp = scale
-
-    src_w = scale_tmp[0]
-    dst_w = output_size[1]
-    dst_h = output_size[0]
-
-    rot_rad = np.pi * rot / 180
-    src_dir = get_dir([0, src_w * -0.5], rot_rad)
-    dst_dir = np.array([0, (dst_w-1) * -0.5], np.float32)
-
-    src = np.zeros((3, 2), dtype=np.float32)
-    dst = np.zeros((3, 2), dtype=np.float32)
-    src[0, :] = center + scale_tmp * shift
-    src[1, :] = center + src_dir + scale_tmp * shift
-    dst[0, :] = [(dst_w-1) * 0.5, (dst_h-1) * 0.5]
-    dst[1, :] = np.array([(dst_w-1) * 0.5, (dst_h-1) * 0.5]) + dst_dir
-
-    src[2:, :] = get_3rd_point(src[0, :], src[1, :])
-    dst[2:, :] = get_3rd_point(dst[0, :], dst[1, :])
-
+    # Ensure output_size is [height, width]
+    if not isinstance(output_size, (list, tuple, np.ndarray)):
+        output_size = [output_size, output_size]
+    output_size = np.array(output_size)
+    
+    # Simple scaling factors
+    scale_x = output_size[1] / scale[0]  # width scaling
+    scale_y = output_size[0] / scale[1]  # height scaling
+    
+    # Create transformation matrix
+    trans = np.array([
+        [scale_x, 0, 0],
+        [0, scale_y, 0]
+    ], dtype=np.float32)
+    
+    # Debug output
+    print("\nTransform Debug:")
+    print(f"Input dimensions: {scale}")
+    print(f"Output dimensions: {output_size}")
+    print(f"Scale factors: x={scale_x:.3f}, y={scale_y:.3f}")
+    print(f"Transform matrix:\n{trans}")
+    
     if inv:
-        trans = cv2.getAffineTransform(np.float32(dst), np.float32(src))
-    else:
-        trans = cv2.getAffineTransform(np.float32(src), np.float32(dst))
-
+        # For inverse transform, invert the scale factors
+        trans = np.array([
+            [1/scale_x, 0, 0],
+            [0, 1/scale_y, 0]
+        ], dtype=np.float32)
+    
     return trans
 
 

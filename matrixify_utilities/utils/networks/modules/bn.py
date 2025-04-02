@@ -116,9 +116,23 @@ class InPlaceABNSync(ABN):
     """
 
     def forward(self, x):
-        x, _, _ =  inplace_abn_sync(x, self.weight, self.bias, self.running_mean, self.running_var,
-                                   self.training, self.momentum, self.eps, self.activation, self.slope)
-        return x
+        print(f"\nBN Debug:")
+        print(f"Input shape: {x.shape}")
+        print(f"Weight shape: {self.weight.shape}")
+        print(f"Running mean shape: {self.running_mean.shape}")
+        
+        try:
+            x, mean, var = inplace_abn_sync(
+                x, self.weight, self.bias, 
+                self.running_mean, self.running_var,
+                self.training, self.momentum, self.eps, 
+                self.activation, self.slope
+            )
+            return x
+        except Exception as e:
+            print(f"Error in forward pass: {str(e)}")
+            print(f"Input tensor stats: min={x.min()}, max={x.max()}, mean={x.mean()}")
+            raise
 
     def __repr__(self):
         rep = '{name}({num_features}, eps={eps}, momentum={momentum},' \

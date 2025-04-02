@@ -16,9 +16,12 @@ import torch.nn as nn
 import math
 from torch.utils.model_zoo import load_url
 
-from modules import InPlaceABNSync
+from ..modules import InPlaceABNSync
 
-BatchNorm2d = functools.partial(InPlaceABNSync, activation='none')
+class BatchNorm2d(InPlaceABNSync):
+    """BatchNorm2d implementation using InPlaceABNSync"""
+    def __init__(self, num_features):
+        super().__init__(num_features, activation='none')
 
 __all__ = ['ResNet', 'resnet18', 'resnet50', 'resnet101']  # resnet101 is coming soon!
 

@@ -18,7 +18,7 @@ import torch.nn as nn
 from torch.autograd import Variable
 from torch.nn import functional as F
 
-from modules import InPlaceABNSync
+from ..modules import InPlaceABNSync
 BatchNorm2d = functools.partial(InPlaceABNSync, activation='none')
 
 
@@ -224,3 +224,13 @@ class ASP_OC_Module(nn.Module):
             raise RuntimeError('unknown input type')
         output = self.conv_bn_dropout(out)
         return output
+
+
+class OCNet(nn.Module):
+    """OCNet implementation combining self-attention blocks"""
+    def __init__(self, features, out_features=256, dilations=(12, 24, 36)):
+        super(OCNet, self).__init__()
+        self.context = ASP_OC_Module(features, out_features, dilations)
+
+    def forward(self, x):
+        return self.context(x)
