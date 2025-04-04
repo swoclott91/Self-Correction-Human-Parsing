@@ -45,19 +45,9 @@ class InPlaceABN(Function):
         # Simplified backward pass
         return grad_output, None, None, None, None, None, None, None, None, None
 
-# Create function interfaces
-def inplace_abn(x, weight, bias, running_mean, running_var, training=True, momentum=0.1, eps=1e-5, activation="leaky_relu", slope=0.01):
-    return InPlaceABN.apply(x, weight, bias, running_mean, running_var, training, momentum, eps, activation, slope)
-
-def inplace_abn_sync(x, weight, bias, running_mean, running_var, training=True, momentum=0.1, eps=1e-05, activation='leaky_relu', slope=0.01):
+def inplace_abn(x, weight, bias, running_mean, running_var, training=True, momentum=0.1, 
+                eps=1e-05, activation="leaky_relu", slope=0.01):
     """Applies In-Place Activated Batch Normalization"""
-    # Original implementation returns (output, mean, var)
-    # Let's add debug logging
-    print(f"\nABN Debug:")
-    print(f"Input shape: {x.shape}")
-    print(f"Weight shape: {weight.shape}")
-    print(f"Running mean shape: {running_mean.shape}")
-    
     # Compute batch norm
     if training:
         mean = x.mean(dim=(0, 2, 3))
@@ -80,11 +70,17 @@ def inplace_abn_sync(x, weight, bias, running_mean, running_var, training=True, 
     if activation == 'relu':
         x = torch.relu_(x)
     elif activation == 'leaky_relu':
-        x = torch.nn.functional.leaky_relu_(x, negative_slope=slope)
+        x = F.leaky_relu_(x, negative_slope=slope)
     elif activation == 'elu':
-        x = torch.nn.functional.elu_(x)
+        x = F.elu_(x)
     
     return x, mean.detach(), var.detach()
+
+def inplace_abn_sync(x, weight, bias, running_mean, running_var, training=True, momentum=0.1,
+                    eps=1e-05, activation="leaky_relu", slope=0.01):
+    """Applies In-Place Activated Batch Normalization with sync"""
+    return inplace_abn(x, weight, bias, running_mean, running_var, training, momentum,
+                      eps, activation, slope)
 
 # Constants
 ACT_RELU = "relu"

@@ -1,15 +1,74 @@
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Large model files and libraries
+*.pth
+*.lib
+*.dll
+*.so
+*.dylib
+models/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Temporary/Cache files
+*.swp
+.DS_Store
+.env
+.venv
+*.log
+data/temp/
+data/temp_images/
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Project specific
+data/exports/*
+data/intermediate/*
+data/final/*
+!data/exports/.gitkeep
+!data/intermediate/.gitkeep
+!data/final/.gitkeep
+
+# Debug files
+debug_visualizations/
+
 # Generated content and large files
 **/__pycache__
 data/
 log/
-debug_visualizations/
 analysis_results/
 tests/test_data/
 pretrain_model/
 
 # Model weights and checkpoints
-*.pth
-models/
 checkpoints/
 
 # Test outputs

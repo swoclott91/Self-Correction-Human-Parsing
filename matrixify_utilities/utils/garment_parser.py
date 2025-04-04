@@ -96,8 +96,8 @@ class SimpleFolderDataset(Dataset):
         return img, meta
 
 class GarmentParser:
-    def __init__(self, model_path: str, dataset: str = 'atr', verbose: bool = True):
-        """Initialize parser
+    def __init__(self, model_path: str, dataset: str = 'atr', verbose: bool = False):
+        """Initialize garment parser
         
         Args:
             model_path: Path to model weights
@@ -105,38 +105,48 @@ class GarmentParser:
             verbose: Whether to print debug information
         """
         self.verbose = verbose
-        self.dataset = dataset
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        # Load model settings
-        self.settings = {
-            'atr': {
-                'input_size': [512, 512],
-                'num_classes': 18,
-                'label': ['Background', 'Hat', 'Hair', 'Sunglasses', 'Upper-clothes', 'Skirt', 'Pants', 
-                         'Dress', 'Belt', 'Left-shoe', 'Right-shoe', 'Face', 'Left-leg', 'Right-leg', 
-                         'Left-arm', 'Right-arm', 'Bag', 'Scarf']
-            }
-        }[dataset]
-        
-        # Initialize model
-        self.model = init_model('resnet101', 
-                               num_classes=self.settings['num_classes'], 
-                               pretrained=None)
-        
-        # Load weights
-        state_dict = torch.load(model_path)['state_dict']
-        new_state_dict = {k[7:]: v for k, v in state_dict.items()}  # remove 'module.'
-        self.model.load_state_dict(new_state_dict)
-        self.model.to(self.device)
-        self.model.eval()
+        # Load dataset settings
+        self.settings = dataset_settings[dataset]
         
         # Setup transform
         self.transform = transforms.Compose([
+            transforms.Resize(self.settings['input_size']),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.406, 0.456, 0.485], 
-                              std=[0.225, 0.224, 0.229])
+            transforms.Normalize(
+                mean=[0.406, 0.456, 0.485],
+                std=[0.225, 0.224, 0.229]
+            )
         ])
+        
+        # Initialize model with verbose setting
+        self.model = init_model('resnet101', 
+                               num_classes=self.settings['num_classes'],
+                               pretrained=None)
+        
+        # Load weights and remove 'module.' prefix
+        state_dict = torch.load(model_path)['state_dict']
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            name = k[7:] if k.startswith('module.') else k  # Remove 'module.' prefix
+            new_state_dict[name] = v
+        
+        # Load cleaned state dict
+        self.model.load_state_dict(new_state_dict)
+        self.model.to(self.device)  # Move model to device
+        
+        # Set model to eval mode
+        self.model.eval()
+        
+        # Disable gradients
+        for param in self.model.parameters():
+            param.requires_grad = False
+        
+        # Ensure all BN layers have verbose disabled
+        for module in self.model.modules():
+            if hasattr(module, 'verbose'):
+                module.verbose = False
 
     def parse_image(self, image_path: str):
         """Parse image and return segmentation mask"""
