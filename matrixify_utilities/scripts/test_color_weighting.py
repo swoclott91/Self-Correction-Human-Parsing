@@ -119,6 +119,7 @@ def test_color_weighting():
                 rgb=color.rgb,
                 lab=color.lab,
                 hex=color.hex,
+                hsv=hsv,
                 frequency=adjusted_frequency
             ))
         
@@ -129,6 +130,7 @@ def test_color_weighting():
                 rgb=c.rgb,
                 lab=c.lab,
                 hex=c.hex,
+                hsv=c.hsv,
                 frequency=(c.frequency/total_freq)*100
             ) for c in weighted_colors
         ]

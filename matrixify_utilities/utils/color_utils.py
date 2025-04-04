@@ -15,17 +15,16 @@ class ColorInfo:
     pattern_group: int = 0  # 0 means no pattern, positive numbers group related pattern colors
 
 class ColorExtractor:
-    def __init__(self, n_colors=5, lab_threshold=30, verbose=True):
+    def __init__(self, n_colors=5, lab_threshold=20):
         """Initialize color extractor
         
         Args:
             n_colors: Number of colors to extract
             lab_threshold: Threshold for merging similar colors in LAB space
-            verbose: Whether to print debug information
         """
         self.n_colors = n_colors
         self.lab_threshold = lab_threshold
-        self.verbose = verbose
+        self.background_threshold = 0.85  # Default threshold
 
     @staticmethod
     def rgb_to_hex(rgb: Tuple[int, int, int]) -> str:
@@ -67,8 +66,7 @@ class ColorExtractor:
         valid_pixels = img[mask > 0] if mask is not None else img.reshape(-1, 3)
         
         if len(valid_pixels) == 0:
-            if self.verbose:
-                print("No valid pixels found in mask")
+            print("No valid pixels found in mask")
             return {'colors': []}
         
         # Cluster colors
@@ -94,21 +92,19 @@ class ColorExtractor:
                     if self.calculate_color_distance(color_info.lab, existing_color.lab) < self.lab_threshold:
                         existing_color.frequency += freq
                         merged = True
-                        if self.verbose:
-                            print(f"Merged with existing group: RGB{existing_color.rgb}")
+                        print(f"Merged with existing group: RGB{existing_color.rgb}")
                         break
                 
                 if not merged:
                     color_info.frequency = freq
                     colors.append(color_info)
-                    if self.verbose:
-                        print(f"Added as new color group: RGB{rgb}")
+                    print(f"Added as new color group: RGB{rgb}")
                         
         # Sort by frequency
         colors.sort(key=lambda x: x.frequency, reverse=True)
         
         # Filter out likely background colors
-        colors = [c for c in colors if not self._is_background_color(c)]
+        colors = [c for c in colors if not self.is_background_color(c.rgb, c.hsv[2])]
         
         return {'colors': colors}
 
@@ -117,9 +113,15 @@ class ColorExtractor:
         # This is a placeholder and should be replaced with the actual implementation
         return np.sqrt(sum((a - b) ** 2 for a, b in zip(lab1, lab2)))
 
-    def _is_background_color(self, color_info):
-        # Implement the logic to determine if a color is likely a background color
-        # This is a placeholder and should be replaced with the actual implementation
+    def is_background_color(self, color: np.ndarray, v: float) -> bool:
+        """Determine if a color is likely background"""
+        # More sophisticated background detection for whites
+        if v > self.background_threshold * 255:  # Convert threshold to 0-255 range
+            # For very light colors, check saturation
+            hsv = cv2.cvtColor(np.uint8([[color]]), cv2.COLOR_RGB2HSV)[0][0]
+            s = hsv[1]
+            # Allow high-value, low-saturation colors through if they're significant
+            return s < 10 and v > 0.95 * 255
         return False
 
     def extract_colors(self, 
@@ -204,9 +206,7 @@ class ColorExtractor:
                 # Filter out likely background colors
                 s = hsv[1]  # Saturation
                 v = hsv[2]  # Value
-                if ((s < 30 and v > 200) or    # Very bright, low saturation
-                    (v < 40) or                # Too dark
-                    (s < 20 and freq < 0.05)): # Low saturation and low frequency
+                if self.is_background_color(rgb, v):
                     print("Skipped: Likely background color")
                     continue
                 

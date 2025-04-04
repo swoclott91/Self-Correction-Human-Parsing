@@ -115,12 +115,30 @@ class ColorNormalizer:
         }
 
     def color_confidence_score(self, hsv: Tuple[float, float, float], expected_color: str) -> float:
-        """Calculate confidence score for a color matching expected category"""
+        """Calculate confidence score with shadow compensation"""
         h, s, v = hsv
         color_range = self.color_ranges.get(expected_color.lower())
-        if not color_range:
-            return 1.0  # No range defined, accept all colors
+        
+        # Special handling for light colors
+        if 'white' in expected_color.lower() or 'light' in expected_color.lower():
+            # Boost confidence for lighter shades
+            v_boost = min((v / 70) ** 1.5, 1.5)  # Exponential boost for higher values
+            # Reduce impact of saturation for light colors
+            s_penalty = max(1 - (s / 100) * 0.5, 0.5)  # Less penalty for saturation
+            confidence = min(v_boost * s_penalty, 1.0)
             
+            # Log confidence calculation for light colors
+            logger.info(f"\nConfidence Scoring for {expected_color}:")
+            logger.info(f"HSV Input: ({h:.1f}°, {s:.1f}%, {v:.1f}%)")
+            logger.info(f"Value Boost: {v_boost:.2f}, Saturation Penalty: {s_penalty:.2f}")
+            logger.info(f"Final Confidence: {confidence:.2f}")
+            
+            return confidence
+        
+        # Regular color handling
+        if not color_range:
+            return 1.0
+        
         # Check if color is within primary or secondary hue range
         in_primary_range = color_range['h'][0] <= h <= color_range['h'][1]
         in_secondary_range = ('h2' in color_range and 
@@ -134,6 +152,43 @@ class ColorNormalizer:
         v_score = 1.0 if color_range['v'][0] <= v <= color_range['v'][1] else 0.7
         
         return min(s_score, v_score)
+
+    def adjust_for_shadows(self, color_info: ColorInfo, color_name: str) -> ColorInfo:
+        """Adjust colors to account for shadows in light-colored garments"""
+        # Check if this is a light-colored garment
+        light_color_keywords = {'white', 'ivory', 'cream', 'off white', 'light', 'pale'}
+        is_light_color = any(keyword in color_name.lower() for keyword in light_color_keywords)
+        
+        if is_light_color:
+            h, s, v = self._rgb_to_hsv(color_info.rgb)
+            
+            # Adjust threshold for light colors - capture more of the white range
+            if 50 < v < 98:  # Expanded range to catch more potential whites
+                # Log original values
+                logger.info(f"\nShadow Adjustment for {color_name}:")
+                logger.info(f"Original - HSV: ({h:.1f}°, {s:.1f}%, {v:.1f}%), RGB: {color_info.rgb}, Hex: {color_info.hex}")
+                
+                # More aggressive boost for whites
+                v_new = min(v * 1.25, 98)  # 25% boost for whites
+                s_new = max(s * 0.75, 0)   # 25% reduction in saturation
+                
+                # Convert back to RGB
+                bgr = cv2.cvtColor(np.uint8([[[h/2, s_new*2.55, v_new*2.55]]]), cv2.COLOR_HSV2BGR)[0][0]
+                rgb = tuple(reversed(bgr))
+                hex_code = '#{:02x}{:02x}{:02x}'.format(*rgb)
+                
+                # Log adjusted values
+                logger.info(f"Adjusted - HSV: ({h:.1f}°, {s_new:.1f}%, {v_new:.1f}%), RGB: {rgb}, Hex: {hex_code}")
+                
+                return ColorInfo(
+                    rgb=rgb,
+                    lab=color_info.lab,
+                    hex=hex_code,
+                    hsv=(h, s_new, v_new),
+                    frequency=color_info.frequency
+                )
+        
+        return color_info
 
     def process_csv(self, input_data: Union[str, pd.DataFrame], output_path: str = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Process Matrixify CSV and create color metaobjects"""
@@ -150,21 +205,25 @@ class ColorNormalizer:
             color_changes = []
             color_cache = {}  # Cache for color analysis results
             
-            # Get unique color-image combinations
+            # Add a dictionary to track product colors
+            product_colors = defaultdict(list)  # Key: product handle, Value: list of color handles
+            
+            # Get unique color-image combinations with product handle
             unique_colors = df[
                 (df['Option1 Name'].str.lower() == 'color') & 
                 (df['Variant Image'].notna())
-            ][['Option1 Value', 'Variant Image']].drop_duplicates()
+            ][['Handle', 'Option1 Value', 'Variant Image']].drop_duplicates()  # Added Handle to selection
             
             total_colors = len(unique_colors)
             logger.info(f"Processing {total_colors} unique color variants")
             
             # Process each unique color-image combination
-            for idx, (_, row) in enumerate(unique_colors.iterrows(), 1):
+            for idx, row in unique_colors.iterrows():
                 color_name = row['Option1 Value']
                 image_url = row['Variant Image']
+                product_handle = row['Handle'].split('/')[0]  # Get base product handle
                 
-                logger.info(f"Processing color {idx}/{total_colors}: {color_name}")
+                logger.info(f"Processing color {idx}/{len(unique_colors)}: {color_name} for product {product_handle}")
                 
                 # First create a temporary handle to use until we get the hex code
                 temp_handle = color_name.lower().replace(' ', '-')
@@ -176,13 +235,25 @@ class ColorNormalizer:
                         result = self.parser.parse_image(local_image_path)
                         mask = self.parser.get_garment_mask(result)
                         
-                        # Modify color extraction to use confidence scores
+                        # Modify the color extraction parameters for light colors
+                        if 'white' in color_name.lower() or 'light' in color_name.lower():
+                            self.color_extractor.background_threshold = 0.95  # Increase threshold for whites
+                        else:
+                            self.color_extractor.background_threshold = 0.85  # Default threshold
+                        
+                        # Extract initial colors
                         color_analysis = self.color_extractor.extract_colors(local_image_path, mask)
                         
-                        # Apply confidence scoring to extracted colors
+                        # First adjust for shadows in light colors
+                        adjusted_colors = [
+                            self.adjust_for_shadows(color, color_name) 
+                            for color in color_analysis['colors']
+                        ]
+                        
+                        # Then apply confidence scoring to adjusted colors
                         weighted_colors = []
-                        for color in color_analysis['colors']:
-                            hsv = self._rgb_to_hsv(color.rgb)
+                        for color in adjusted_colors:
+                            hsv = color.hsv  # Use HSV from adjusted colors
                             confidence = self.color_confidence_score(hsv, color_name)
                             
                             # Adjust color weight based on confidence
@@ -191,6 +262,7 @@ class ColorNormalizer:
                                 rgb=color.rgb,
                                 lab=color.lab,
                                 hex=color.hex,
+                                hsv=hsv,
                                 frequency=adjusted_frequency
                             ))
                         
@@ -201,18 +273,22 @@ class ColorNormalizer:
                                 rgb=c.rgb,
                                 lab=c.lab,
                                 hex=c.hex,
+                                hsv=c.hsv,
                                 frequency=(c.frequency/total_freq)*100
                             ) for c in weighted_colors
                         ]
                         
-                        # Update color analysis with weighted results
+                        # Sort by adjusted frequency
+                        normalized_colors.sort(key=lambda x: x.frequency, reverse=True)
+                        
+                        # Update color analysis with final weighted results
                         color_analysis['colors'] = normalized_colors
                         
-                        # Get primary color hex
-                        primary_color = color_analysis['colors'][0]
-                        hex_code = primary_color.hex.lstrip('#')  # Remove # from hex code
+                        # Get primary color hex from weighted analysis
+                        primary_color = normalized_colors[0]
+                        hex_code = primary_color.hex.lstrip('#')
                         
-                        # Create proper handle format: color-name-hexcode
+                        # Create proper handle format using weighted color
                         color_handle = f"{temp_handle}-{hex_code}"
                         
                         # Map to Shopify taxonomy color
@@ -242,6 +318,7 @@ class ColorNormalizer:
                             {
                                 'Handle': color_handle,
                                 'Command': 'MERGE',
+                                'Definition: Handle': 'shopify--color-pattern',
                                 'Definition: Name': 'Color',
                                 'Field': 'label',
                                 'Value': color_name
@@ -249,6 +326,7 @@ class ColorNormalizer:
                             {
                                 'Handle': color_handle,
                                 'Command': 'MERGE',
+                                'Definition: Handle': 'shopify--color-pattern',
                                 'Definition: Name': 'Color',
                                 'Field': 'color',
                                 'Value': f"#{hex_code}"
@@ -256,6 +334,7 @@ class ColorNormalizer:
                             {
                                 'Handle': color_handle,
                                 'Command': 'MERGE',
+                                'Definition: Handle': 'shopify--color-pattern',
                                 'Definition: Name': 'Color',
                                 'Field': 'color_taxonomy_reference',
                                 'Value': taxonomy_color
@@ -263,11 +342,17 @@ class ColorNormalizer:
                             {
                                 'Handle': color_handle,
                                 'Command': 'MERGE',
+                                'Definition: Handle': 'shopify--color-pattern',
                                 'Definition: Name': 'Color',
                                 'Field': 'pattern_taxonomy_reference',
                                 'Value': 'gid://shopify/TaxonomyValue/2874'
                             }
                         ])
+                        
+                        # After successfully processing color, store the handle with its product
+                        if color_handle:
+                            product_colors[product_handle].append(f"shopify--color-pattern.{color_handle}")
+                            logger.info(f"Added color {color_handle} to product {product_handle}")
                         
                     except Exception as e:
                         logger.error(f"Failed to process image {local_image_path}: {e}")
@@ -276,14 +361,29 @@ class ColorNormalizer:
                     logger.warning(f"Skipping color due to failed image download: {image_url}")
                     continue
             
-            # Update all variants using cached results
+            # After processing all colors, update the product rows
+            for product_handle, color_handles in product_colors.items():
+                # Get indices of all rows for this product
+                product_indices = df[df['Handle'].str.startswith(f"{product_handle}/", na=False) | 
+                                   (df['Handle'] == product_handle)].index
+                
+                if len(product_indices) > 0:
+                    # Set all color handles in the first row
+                    color_pattern_string = ', '.join(sorted(set(color_handles)))  # Remove duplicates and sort
+                    df.loc[product_indices[0], 'Metafield: shopify.color-pattern [list.metaobject_reference]'] = color_pattern_string
+                    
+                    # Clear the field for other rows of the same product
+                    if len(product_indices) > 1:
+                        df.loc[product_indices[1:], 'Metafield: shopify.color-pattern [list.metaobject_reference]'] = ''
+                    
+                    logger.info(f"Set color patterns for {product_handle}: {color_pattern_string}")
+            
+            # Now set the color season metafields for each variant
             for _, variant in df.iterrows():
                 if 'Option1 Name' in variant and variant['Option1 Name'].lower() == 'color':
                     color_name = variant['Option1 Value']
                     if color_name in color_cache:
                         cached = color_cache[color_name]
-                        # Set color pattern metafield with proper prefix
-                        df.loc[variant.name, 'Metafield: shopify.color-pattern [list.metaobject_reference]'] = f"shopify--color-pattern.{cached['handle']}"
                         # Set color season metafield
                         df.loc[variant.name, 'Variant Metafield: custom.pallet [list.metaobject_reference]'] = cached['color_season']
                         
@@ -482,6 +582,27 @@ class ColorNormalizer:
         
         # Return comma-separated list of handles
         return ', '.join(seasons)
+
+    def analyze_brightness_distribution(self, image: np.ndarray, mask: np.ndarray) -> float:
+        """Analyze brightness distribution to detect shadow bias"""
+        # Convert to HSV
+        hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+        # Get value channel
+        v = hsv[:, :, 2]
+        # Get values only in mask
+        masked_values = v[mask > 0]
+        
+        if len(masked_values) == 0:
+            return 1.0
+        
+        # Calculate statistics
+        median_v = np.median(masked_values)
+        p90_v = np.percentile(masked_values, 90)
+        
+        # If there's a significant difference between median and 90th percentile,
+        # this might indicate shadow presence
+        shadow_factor = p90_v / median_v if median_v > 0 else 1.0
+        return min(shadow_factor, 1.5)  # Cap the adjustment
 
 def process_colors(input_file: str, output_dir: str):
     """Process colors in a Matrixify CSV file"""
