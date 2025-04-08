@@ -1,0 +1,17 @@
+# API Dependencies
+python-dotenv>=1.0.0
+rich>=13.7.0
+
+# GraphQL Client
+gql>=3.5.0
+requests>=2.31.0
+requests-toolbelt>=1.0.0
+aiohttp>=3.9.0
+
+# Data Processing
+pandas>=2.0.3
+numpy>=1.24.0
+
+# Utilities
+pathlib>=1.0.1
+typing-extensions>=4.8.0 

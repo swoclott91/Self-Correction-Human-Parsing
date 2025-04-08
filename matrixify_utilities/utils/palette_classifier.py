@@ -3,12 +3,29 @@ from typing import List, Tuple, Dict, Optional, NamedTuple
 from enum import Enum
 import numpy as np
 import cv2
-from utils.color_utils import ColorInfo
+from matrixify_utilities.utils.color_utils import ColorInfo
 import logging
 from collections import defaultdict
+import requests
+from PIL import Image
+from io import BytesIO
+from functools import lru_cache
+from tenacity import retry, stop_after_attempt, wait_exponential
+import aiohttp
+import asyncio
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
+from concurrent.futures import ThreadPoolExecutor
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging - suppress debug messages
+logging.getLogger('PIL').setLevel(logging.INFO)
+logging.getLogger('urllib3').setLevel(logging.INFO)
+
+# Configure root logger format
+logging.basicConfig(
+    format='%(levelname)s:%(name)s: %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 class ColorAnalysis(NamedTuple):
@@ -41,6 +58,10 @@ class Season(Enum):
     WINTER_DEEP = "Deep Winter"
     WINTER_COOL = "Cool Winter"
     WINTER_BRIGHT = "Bright Winter"
+    SPRING = "spring"
+    SUMMER = "summer" 
+    AUTUMN = "autumn"
+    WINTER = "winter"
 
 @dataclass
 class SeasonalCharacteristics:
@@ -57,6 +78,12 @@ class SeasonalCharacteristics:
             f"Depth: {self.depth:+.2f} "
             f"({'Deep' if self.depth > 0 else 'Light'})"
         )
+
+@dataclass
+class ColorSeason:
+    season: Season
+    confidence: float
+    explanation: str
 
 class PaletteClassifier:
     # Thresholds for rule-based classification
@@ -77,6 +104,23 @@ class PaletteClassifier:
         """
         self.use_rules = use_rules
         self.sigma = sigma
+        # Configure session with retries and timeouts
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+        )
+        self.session = requests.Session()
+        adapter = HTTPAdapter(
+            max_retries=retry_strategy, 
+            pool_connections=10, 
+            pool_maxsize=10
+        )
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
+        
+        # Cache for downloaded images
+        self.image_cache = {}
         # Reference colors for each season (RGB values)
         self.reference_colors = {
             # Springs: Warm and Clear
@@ -610,4 +654,68 @@ class PaletteClassifier:
             'primary_seasons': primary_seasons,
             'secondary_seasons': secondary_seasons,
             'scores': scores
-        } 
+        }
+
+    @lru_cache(maxsize=1000)
+    def _download_image(self, image_url: str) -> Optional[Image.Image]:
+        """Download and cache image from URL"""
+        try:
+            response = self.session.get(image_url, timeout=10)
+            response.raise_for_status()
+            return Image.open(BytesIO(response.content))
+        except Exception as e:
+            logger.error(f"Error downloading image {image_url}: {e}")
+            return None
+
+    def _download_image_batch(self, image_url: str) -> Tuple[str, Optional[Image.Image]]:
+        """Download a single image and return with its URL"""
+        return image_url, self._download_image(image_url)
+
+    def classify_image_urls_batch(self, image_urls: List[str]) -> Dict[str, ColorSeason]:
+        """Analyze multiple images from URLs and determine their color seasons"""
+        results = {}
+        unique_urls = list(set(image_urls))  # Remove duplicates
+        
+        if not unique_urls:
+            return results
+            
+        logger.info(f"Processing {len(unique_urls)} unique images...")
+        
+        # Download images in parallel using thread pool
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            downloaded_images = dict(
+                executor.map(self._download_image_batch, unique_urls)
+            )
+        
+        successful_downloads = sum(1 for img in downloaded_images.values() if img is not None)
+        logger.info(f"Successfully processed {successful_downloads}/{len(unique_urls)} images")
+        
+        for url, img in downloaded_images.items():
+            try:
+                if img:
+                    # TODO: Implement actual color analysis
+                    results[url] = ColorSeason(
+                        season=Season.SPRING,
+                        confidence=0.85,
+                        explanation="Placeholder classification - actual analysis to be implemented"
+                    )
+                else:
+                    results[url] = ColorSeason(
+                        season=Season.SPRING,
+                        confidence=0.5,
+                        explanation="Error downloading image, using default classification"
+                    )
+            except Exception as e:
+                logger.error(f"Error analyzing image {url}: {e}")
+                results[url] = ColorSeason(
+                    season=Season.SPRING,
+                    confidence=0.5,
+                    explanation="Error analyzing image, using default classification"
+                )
+                
+        return results
+
+    def classify_image_url(self, image_url: str) -> Optional[ColorSeason]:
+        """Analyze a single image from URL"""
+        results = self.classify_image_urls_batch([image_url])
+        return results.get(image_url) 

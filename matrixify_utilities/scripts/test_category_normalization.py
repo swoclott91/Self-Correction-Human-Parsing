@@ -1,91 +1,140 @@
-import pandas as pd
-from normalize_categories import process_csv
 import logging
 from pathlib import Path
+import sys
+from typing import Dict, Optional
 from collections import defaultdict
-import re
+
+from api.client import ShopifyClient
+from scripts.normalize_categories import CategoryNormalizer
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
-def analyze_product_names(df, unrecognized_categories):
-    """Analyze product names for common patterns in unrecognized categories"""
-    product_patterns = defaultdict(list)
+def analyze_product_categories(client: ShopifyClient, normalizer: CategoryNormalizer, 
+                             product_id: Optional[str] = None, limit: Optional[int] = None):
+    """Analyze product categorization using live Shopify data"""
+    category_stats = defaultdict(int)
+    changes = []
+    unrecognized = []
     
-    # Common clothing keywords to look for
-    clothing_keywords = {
-        'top': ['blouse', 'shirt', 'tank', 'tee', 'tunic', 'crop'],
-        'dress': ['dress', 'gown', 'maxi', 'midi', 'mini'],
-        'bottom': ['pant', 'jean', 'short', 'skirt', 'legging'],
-        'outerwear': ['jacket', 'coat', 'cardigan', 'blazer', 'sweater'],
-        'set': ['set', 'outfit', 'coordinate', 'suit', 'ensemble'],
-        'one-piece': ['jumpsuit', 'romper', 'playsuit', 'overall'],
-    }
-    
-    # Analyze each unrecognized category
-    for category in unrecognized_categories:
-        # Get products with this category
-        products = df[df['Category'] == category]
-        
-        # Analyze product titles
-        for _, row in products.iterrows():
-            title = row['Title'].lower()
-            found_patterns = []
-            
-            # Look for clothing keywords
-            for category_type, keywords in clothing_keywords.items():
-                for keyword in keywords:
-                    if keyword in title:
-                        found_patterns.append((category_type, keyword))
-            
-            if found_patterns:
-                product_patterns[category].append({
-                    'title': row['Title'],
-                    'handle': row['Handle'],
-                    'patterns': found_patterns
-                })
-    
-    return product_patterns
+    try:
+        # Get products (single or batch)
+        if product_id:
+            product = client.get_product(product_id)
+            if product:
+                products = [product]
+            else:
+                logger.error(f"Product with ID {product_id} not found")
+                return None
+        else:
+            products = []
+            for batch in client.get_products_batch(50):  # Process in batches of 50
+                products.extend(batch)
+                if limit and len(products) >= limit:
+                    products = products[:limit]
+                    break
 
-def test_category_normalization():
-    """Test category normalization with sample data"""
+        # Process each product
+        for product in products:
+            title = product.get('title', '')
+            description = product.get('description', '')
+            current_category = client.get_product_category(product.get('id'))
+            
+            # Try to normalize category
+            normalized_category = normalizer.normalize_category(
+                current_category or '',
+                title=title,
+                description=description
+            )
+            
+            # Track statistics
+            if normalized_category:
+                category_stats[normalized_category] += 1
+                
+                if normalized_category != current_category:
+                    changes.append({
+                        'Handle': product.get('handle'),
+                        'Title': title,
+                        'Old Category': current_category or 'Not Set',
+                        'New Category': normalized_category,
+                        'Change Type': 'Update' if current_category else 'New'
+                    })
+            else:
+                unrecognized.append({
+                    'Handle': product.get('handle'),
+                    'Title': title,
+                    'Current Category': current_category
+                })
+                
+        return {
+            'category_stats': dict(category_stats),
+            'changes': changes,
+            'unrecognized': unrecognized
+        }
+                
+    except Exception as e:
+        logger.error(f"Error analyzing products: {e}")
+        return None
+
+def test_category_normalization(product_id: Optional[str] = None, 
+                              limit: Optional[int] = None,
+                              debug: bool = False):
+    """Test category normalization with live Shopify data"""
+    if debug:
+        logging.getLogger().setLevel(logging.DEBUG)
     
-    # Get test file path
-    project_root = Path(__file__).parent.parent
-    test_file = project_root / 'tests/test_data/sample csv matrixify/products_test_for_re_import.csv'
-    output_file = project_root / 'data/intermediate/normalized_categories.csv'
+    client = ShopifyClient()
+    normalizer = CategoryNormalizer()
     
-    # Process CSV
-    logger.info(f"Testing with file: {test_file}")
-    df, report = process_csv(str(test_file), str(output_file))
+    logger.info("Starting category analysis...")
     
+    results = analyze_product_categories(client, normalizer, product_id, limit)
+    if not results:
+        return False
+        
     # Print category changes
-    if report['changes']:
+    if results['changes']:
         logger.info("\nCategory Changes:")
-        for change in report['changes']:
+        for change in results['changes']:
             logger.info(f"\nProduct: {change['Handle']}")
             logger.info(f"Title: {change['Title']}")
-            logger.info(f"  Old Category: {change['Old Category'] if change['Old Category'] != 'None' else 'Not Set'}")
+            logger.info(f"  Old Category: {change['Old Category']}")
             logger.info(f"  New Category: {change['New Category']}")
             logger.info(f"  Change Type: {change['Change Type']}")
     
     # Print category statistics
     logger.info("\nCategory Statistics:")
-    for category, count in report['category_stats'].items():
+    for category, count in results['category_stats'].items():
         logger.info(f"{category}: {count} products")
     
     # Print summary
+    total_products = sum(results['category_stats'].values())
     logger.info("\nSummary:")
-    logger.info(f"Total products processed: {len(df['Handle'].unique())}")
-    logger.info(f"Total changes made: {len(report['changes'])}")
-    logger.info(f"Total unrecognized: {len(report['unrecognized'])}")
+    logger.info(f"Total products processed: {total_products}")
+    logger.info(f"Total changes suggested: {len(results['changes'])}")
+    logger.info(f"Total unrecognized: {len(results['unrecognized'])}")
     
     # Calculate recognition rate
-    total_products = len(df['Handle'].unique())
-    recognized = total_products - len(report['unrecognized'])
-    recognition_rate = (recognized / total_products * 100) if total_products > 0 else 0
+    recognition_rate = ((total_products - len(results['unrecognized'])) / total_products * 100) if total_products > 0 else 0
     logger.info(f"Recognition rate: {recognition_rate:.1f}%")
+    
+    return True
 
 if __name__ == '__main__':
-    test_category_normalization() 
+    import argparse
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("--product-id", help="Process specific product ID")
+    parser.add_argument("--limit", type=int, help="Maximum number of products to process")
+    args = parser.parse_args()
+    
+    success = test_category_normalization(
+        product_id=args.product_id,
+        limit=args.limit,
+        debug=args.debug
+    )
+    
+    if not success:
+        sys.exit(1) 
