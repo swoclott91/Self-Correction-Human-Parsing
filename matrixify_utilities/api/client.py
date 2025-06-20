@@ -20,7 +20,7 @@ class ShopifyClient:
         self.access_token = access_token
         
         transport = RequestsHTTPTransport(
-            url=f'https://{shop_url}/admin/api/2024-04/graphql.json',
+            url=f'https://{shop_url}/admin/api/2025-04/graphql.json',
             headers={'X-Shopify-Access-Token': access_token},
             verify=True,
         )
@@ -31,7 +31,7 @@ class ShopifyClient:
         )
         
         # Set up base URLs with latest API version
-        api_version = '2024-07'  # Update to latest version
+        api_version = '2025-04'  # Update to latest version
         self.rest_url = f"https://{self.shop_url}/admin/api/{api_version}"
         self.graphql_url = f"https://{self.shop_url}/admin/api/{api_version}/graphql.json"
         
@@ -47,7 +47,7 @@ class ShopifyClient:
 
     def setup_session(self):
         """Configure Shopify API session"""
-        api_version = '2024-01'  # Update as needed
+        api_version = '2025-04'  # Update as needed
         shop_url = f"https://{self.shop_url}/admin/api/{api_version}/graphql.json"
         
         try:
@@ -473,7 +473,7 @@ class ShopifyClient:
         self, 
         variant_id: str, 
         definition_id: str,
-        metaobject_id: str
+        value: str
     ) -> bool:
         """Connect a variant option to a metafield definition"""
         mutation = """
@@ -496,7 +496,7 @@ class ShopifyClient:
             "metafields": [{
                 "ownerId": variant_id,
                 "type": "metaobject_reference",
-                "value": metaobject_id,
+                "value": value,
                 "definitionId": definition_id
             }]
         }
@@ -520,14 +520,14 @@ class ShopifyClient:
     def connect_variant_color(self, variant_id: str, color_metaobject_id: str) -> bool:
         """Connect a variant's color option to the corresponding color metaobject"""
         
-        # First create the pallet metafield
-        pallet_result = self.connect_variant_to_metafield(
+        # First create the palette metafield
+        palette_result = self.connect_variant_to_metafield(
             variant_id=variant_id,
-            definition_id="gid://shopify/MetafieldDefinition/87458021748",  # Pallet definition
-            metaobject_id=color_metaobject_id
+            definition_id="gid://shopify/MetafieldDefinition/87458021748",  # Palette definition
+            value=color_metaobject_id
         )
         
-        if not pallet_result:
+        if not palette_result:
             return False
         
         return True

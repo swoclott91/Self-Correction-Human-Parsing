@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Union
 import logging
 from difflib import SequenceMatcher
 
@@ -10,13 +10,52 @@ class TaxonomyMapper:
     """Maps between Shopify category paths and GIDs, provides attribute validation"""
     
     def __init__(self, taxonomy_dir: Optional[Path] = None):
-        """Initialize with taxonomy data directory"""
+        """Initialize with taxonomy directory"""
         self.taxonomy_dir = taxonomy_dir or Path(__file__).parent.parent / 'taxonomy_data'
         
-        # Load taxonomy data
-        self.categories = self._load_json('categories.json')
-        self.attributes = self._load_json('attributes.json')
-        self.values = self._load_json('values.json')
+        # Load categories
+        categories_file = self.taxonomy_dir / 'categories.json'
+        with open(categories_file) as f:
+            categories_data = json.load(f)
+            self.categories = categories_data.get('data', {})
+        
+        # Load values
+        values_file = self.taxonomy_dir / 'values.json'
+        with open(values_file) as f:
+            values_data = json.load(f)
+            # Add debug logging
+            logger.debug(f"Values file structure: {list(values_data.keys())}")
+            logger.debug(f"Sample values: {list(values_data.get('data', {}).keys())[:5]}")
+            self.values = values_data.get('data', {})
+        
+        # Load attributes from apparel_accessories_attributes.json
+        attributes_file = self.taxonomy_dir / 'apparel_accessories_attributes.json'
+        with open(attributes_file) as f:
+            attributes_data = json.load(f)
+            # Build attributes dict from verticals data
+            self.attributes = {}
+            for vertical in attributes_data.get("verticals", []):
+                if vertical["name"] == "Apparel & Accessories":
+                    for category in vertical.get("categories", []):
+                        for attr in category.get("attributes", []):
+                            attr_id = attr.get("id")
+                            if attr_id:
+                                self.attributes[attr_id] = {
+                                    "handle": attr.get("handle"),
+                                    "name": attr.get("name"),
+                                    "description": attr.get("description")
+                                }
+        
+        # Load GID cache
+        cache_path = Path(__file__).parent.parent / 'metaobject_sync/gid_cache.json'
+        logger.debug(f"Loading GID cache from: {cache_path}")
+        try:
+            with open(cache_path) as f:
+                self.gid_cache = json.load(f)
+                logger.debug(f"Loaded {len(self.gid_cache)} cache entries")
+        except Exception as e:
+            logger.error(f"Failed to load GID cache: {e}")
+            self.gid_cache = {}
         
         # Build path -> GID mapping
         self.path_to_gid: Dict[str, str] = {}
@@ -26,6 +65,16 @@ class TaxonomyMapper:
         # Cache allowed attributes per category
         self.category_attributes: Dict[str, Set[str]] = {}
         self._build_attribute_mappings()
+
+        # Build reverse lookups
+        self.handle_to_attribute_id = {
+            attr_data["handle"]: attr_id 
+            for attr_id, attr_data in self.attributes.items()
+        }
+        
+        logger.debug(f"Loaded {len(self.categories)} categories")
+        logger.debug(f"Loaded {len(self.attributes)} attributes")
+        logger.debug(f"Loaded {len(self.values)} values")
 
     def _load_json(self, filename: str) -> Dict:
         """Load and parse a JSON file from the taxonomy directory"""
@@ -57,27 +106,48 @@ class TaxonomyMapper:
             self.category_attributes[gid] = allowed_attrs
 
     def get_category_id_from_path(self, path: str) -> Optional[str]:
-        """Get category GID from a path string"""
-        # Try exact match first
-        gid = self.path_to_gid.get(path)
-        if gid:
-            return gid
+        """Get category GID from path"""
+        # Normalize path
+        path = path.strip().lower()
+        
+        # Search through categories
+        for category_id, info in self.categories.items():
+            category_path = info.get('path', '')
+            if category_path.lower() == path:
+                logger.debug(f"Found category {category_id} for path: {path}")
+                return category_id
             
         # Try with "Apparel & Accessories >" prefix if not found
-        if not path.startswith("Apparel & Accessories > "):
+        if not path.startswith("apparel & accessories > "):
             prefixed_path = f"Apparel & Accessories > {path}"
-            return self.path_to_gid.get(prefixed_path)
+            for category_id, info in self.categories.items():
+                category_path = info.get('path', '')
+                if category_path.lower() == prefixed_path.lower():
+                    logger.debug(f"Found category {category_id} for path with prefix: {prefixed_path}")
+                    return category_id
             
+        logger.warning(f"No category found for path: {path}")
         return None
 
     def get_path_from_category_id(self, category_id: str) -> Optional[str]:
-        """Get category path from a GID"""
-        return self.gid_to_path.get(category_id)
+        """Get category path from GID"""
+        category_info = self.categories.get(category_id, {})
+        return category_info.get('path')
 
-    def get_allowed_attributes(self, category_id: str) -> Set[str]:
+    def get_allowed_attribute_ids(self, category_gid: str) -> 'set[str]':
         """Get set of allowed attribute GIDs for a category"""
-        allowed = self.category_attributes.get(category_id, set())
-        logger.debug(f"Category {category_id} allows attributes: {allowed}")
+        # Use cached mapping if available
+        if category_gid in self.category_attributes:
+            return self.category_attributes[category_gid]
+        
+        # Otherwise build from category data
+        category = self.categories.get(category_gid, {})
+        allowed = set(category.get('allowed_attributes', []))
+        
+        # Cache for future use
+        self.category_attributes[category_gid] = allowed
+        
+        logger.debug(f"Category {category_gid} allows {len(allowed)} attributes")
         return allowed
 
     def get_attribute_info(self, attribute_id: str) -> Optional[Dict]:
@@ -89,23 +159,22 @@ class TaxonomyMapper:
 
     def get_valid_values_for_attribute(self, attr_id: str) -> Dict[str, Dict]:
         """Get valid values for an attribute from the taxonomy"""
-        # Get the attribute info
-        attr_info = self.get_attribute_info(attr_id)
-        if not attr_info:
-            logger.warning(f"No attribute info found for {attr_id}")
-            return {}
+        # Use cached mapping if available
+        if not hasattr(self, 'attribute_values'):
+            self.attribute_values = {}
+            for value_id, value_info in self.values.items():
+                attribute_id = value_info.get('attribute_id')
+                if attribute_id:
+                    if attribute_id not in self.attribute_values:
+                        self.attribute_values[attribute_id] = {}
+                    self.attribute_values[attribute_id][value_id] = value_info
         
-        # Get all values that belong to this attribute
-        valid_values = {}
-        for value_id, value_info in self.values.items():
-            if value_info.get('attribute_id') == attr_id:
-                valid_values[value_id] = value_info
-                logger.debug(f"Found valid value for {attr_id}: {value_info['name']}")
-            
+        valid_values = self.attribute_values.get(attr_id, {})
+        
         if not valid_values:
-            logger.warning(f"No valid values found for attribute {attr_id} ({attr_info.get('name')})")
+            logger.debug(f"No valid values found for attribute {attr_id}")
         else:
-            logger.debug(f"Found {len(valid_values)} valid values for {attr_info.get('name')}")
+            logger.debug(f"Found {len(valid_values)} valid values for attribute {attr_id}")
         
         return valid_values
 
@@ -115,7 +184,7 @@ class TaxonomyMapper:
 
     def is_valid_attribute_for_category(self, category_id: str, attribute_id: str) -> bool:
         """Check if an attribute is valid for a category"""
-        allowed = self.get_allowed_attributes(category_id)
+        allowed = self.get_allowed_attribute_ids(category_id)
         return attribute_id in allowed
 
     def get_apparel_categories(self) -> List[Dict]:
@@ -131,34 +200,48 @@ class TaxonomyMapper:
                 })
         return apparel_categories
 
-    def format_graphql_input(self, product_id: str, category_id: str, 
-                           attributes: Dict[str, str]) -> Dict:
-        """Format product data for GraphQL productUpdate mutation"""
-        
-        # Validate category exists
+    def format_graphql_input(self, product_id: str, category_id: str, attributes: Dict[str, Union[str, List[str]]]) -> Dict:
+        """Format product data for GraphQL mutation"""
         if category_id not in self.categories:
             raise ValueError(f"Invalid category ID: {category_id}")
-            
-        # Validate attributes are allowed for category
-        allowed_attrs = self.get_allowed_attributes(category_id)
-        for attr_id in attributes:
-            if attr_id not in allowed_attrs:
-                raise ValueError(f"Attribute {attr_id} not allowed for category {category_id}")
-                
-        # Format metafields
+        
+        allowed_attrs = self.get_allowed_attribute_ids(category_id)
         metafields = []
-        for attr_id, value in attributes.items():
-            attr_info = self.get_attribute_info(attr_id)
+        
+        for attr_id, values in attributes.items():
+            # Skip category info dict
+            if attr_id == 'category':
+                continue
+            
+            if attr_id not in allowed_attrs:
+                logger.debug(f"Attribute {attr_id} not allowed for category {category_id}")
+                continue
+            
+            attr_info = self.attributes.get(attr_id, {})
             if not attr_info:
                 continue
-                
-            metafields.append({
-                "namespace": "standard",
-                "key": attr_info['handle'],
-                "value": value,
-                "type": attr_info['type']
-            })
+
+            # Convert single values to list if needed
+            if not isinstance(values, list):
+                values = [values]
             
+            # Remove any array notation from the values
+            cleaned_values = []
+            for value in values:
+                if isinstance(value, str):
+                    # Remove any ["..."] wrapping
+                    value = value.strip('[]" ')
+                if value in self.values:  # Validate value exists
+                    cleaned_values.append(value)
+            
+            if cleaned_values:
+                metafields.append({
+                    "namespace": "shopify",
+                    "key": attr_info.get('handle', ''),
+                    "value": json.dumps(cleaned_values) if len(cleaned_values) > 1 else cleaned_values[0],
+                    "type": "list.metaobject_reference" if len(cleaned_values) > 1 else "metaobject_reference"
+                })
+        
         return {
             "id": product_id,
             "category": category_id,
@@ -170,73 +253,60 @@ class TaxonomyMapper:
         Return all full paths that match a category name (case-insensitive)
         Args:
             name: Category name to match
-            text: Optional product text to check for special categories
+            text: Optional product text to help disambiguate
         """
         matches = []
-        name = name.lower()
-        text = text.lower()
+        name_lower = name.lower()
+        text_lower = text.lower()
         
-        # Check for special category indicators in text
-        is_maternity = any(word in text for word in ["maternity", "pregnancy", "pregnant", "expecting"])
-        is_plus_size = any(word in text for word in ["plus size", "plus-size", "curvy"])
-        is_petite = any(word in text for word in ["petite", "short"])
+        logger.debug(f"Looking for paths matching category: {name}")
         
-        # First pass: collect all matching paths
-        for cat in self.categories.values():
-            if cat["name"].lower() == name:
-                path = cat["path"]
-                
-                # Skip special categories unless explicitly indicated
-                if not is_maternity and "Maternity" in path:
-                    continue
-                if not is_plus_size and "Plus Size" in path:
-                    continue
-                if not is_petite and "Petite" in path:
-                    continue
-                if "Baby & Toddler" not in path:  # Always skip baby unless it's the only option
-                    matches.append(path)
+        # Map common category names to their full paths
+        CATEGORY_MAP = {
+            "Tops": ["Clothing > Clothing Tops", "Clothing > Tops"],
+            "Crop Tops": ["Clothing > Clothing Tops > Crop Tops"],
+            "Tube Tops": ["Clothing > Clothing Tops > Tube Tops"],
+            "Cardigans": ["Clothing > Clothing Tops > Cardigans"],
+            "Sweaters": ["Clothing > Clothing Tops > Sweaters"],
+            "Pants": ["Clothing > Bottoms > Pants"],
+            "Dresses": ["Clothing > Dresses"],
+            "Sets": ["Clothing > Sets", "Clothing > Two-Piece Sets"],
+            "Overalls": ["Clothing > One-Piece > Overalls", "Clothing > Jumpsuits & Rompers"]
+        }
         
+        # First try mapped categories
+        if name_lower in CATEGORY_MAP:
+            base_paths = CATEGORY_MAP[name_lower]
+            logger.debug(f"Found base paths for {name}: {base_paths}")
+            for base_path in base_paths:
+                full_path = f"Apparel & Accessories > {base_path}"
+                if full_path in self.path_to_gid:
+                    matches.append(full_path)
+                    logger.debug(f"Found valid path: {full_path}")
+        
+        # If no matches, try exact category name matches
         if not matches:
-            # If no matches found, try again including all paths
-            for cat in self.categories.values():
-                if cat["name"].lower() == name:
-                    matches.append(cat["path"])
+            logger.debug("Trying exact category name matches")
+            for cat_id, cat_data in self.categories.items():
+                cat_name = cat_data.get('name', '').lower()
+                if cat_name == name_lower:
+                    path = cat_data.get('path')
+                    if path:
+                        matches.append(path)
+                        logger.debug(f"Found exact match: {path}")
         
-        # Sort paths by specificity and relevance
-        def path_sort_key(path: str):
-            segments = path.split(" > ")
-            penalty = 0
-            
-            # Penalize special categories
-            if "Baby & Toddler" in path:
-                penalty += 100
-            if "Maternity" in path and not is_maternity:
-                penalty += 90
-            if "Plus Size" in path and not is_plus_size:
-                penalty += 80
-            if "Petite" in path and not is_petite:
-                penalty += 80
-            if "Costumes" in path:
-                penalty += 70
-            if "Traditional & Ceremonial" in path:
-                penalty += 60
-            if "Uniforms" in path:
-                penalty += 50
-            if "Workwear" in path:
-                penalty += 40
-            
-            # Boost standard clothing paths
-            boost = 0
-            if "Clothing > Tops" in path:
-                boost += 20
-            if "Clothing > Dresses" in path:
-                boost += 20
-            if "Clothing > Bottoms" in path:
-                boost += 20
-            
-            return (-len(segments), penalty - boost)
+        # If still no matches, try partial matches
+        if not matches:
+            logger.debug("Trying partial category name matches")
+            for cat_id, cat_data in self.categories.items():
+                cat_name = cat_data.get('name', '').lower()
+                if name_lower in cat_name or cat_name in name_lower:
+                    path = cat_data.get('path')
+                    if path and "Apparel & Accessories" in path:
+                        matches.append(path)
+                        logger.debug(f"Found partial match: {path}")
         
-        matches.sort(key=path_sort_key)
+        logger.debug(f"Found {len(matches)} total matches")
         return matches
 
     def load_taxonomy_data(self) -> None:
@@ -299,43 +369,77 @@ class TaxonomyMapper:
 
     def get_attribute_id_by_handle(self, handle: str) -> Optional[str]:
         """Get attribute ID from its handle"""
-        for attr_id, attr_info in self.attributes.items():
-            if attr_info.get('handle') == handle:
-                return attr_id
-        return None
+        # Use cached mapping if available
+        if not hasattr(self, 'handle_to_attribute_id'):
+            self.handle_to_attribute_id = {
+                attr_data["handle"]: attr_id 
+                for attr_id, attr_data in self.attributes.items()
+                if "handle" in attr_data
+            }
+        
+        attr_id = self.handle_to_attribute_id.get(handle)
+        if attr_id:
+            logger.debug(f"Found attribute ID for handle '{handle}': {attr_id}")
+        else:
+            logger.debug(f"No attribute ID found for handle '{handle}'")
+        return attr_id
 
-    def get_value_id_by_name(self, attribute_id: str, value_name: str, threshold: float = 0.85) -> Optional[str]:
-        """Get value ID by attribute ID and value name using flexible matching"""
-        valid_values = self.get_valid_values_for_attribute(attribute_id)
-        value_name = value_name.lower()
-        
-        # First try exact match
-        for value_id, value_info in valid_values.items():
-            if value_info['name'].lower() == value_name:
-                logger.debug(f"Exact match found for {value_name}: {value_info['name']}")
-                return value_id
+    def get_value_id_by_name(self, attr_id: str, value_name: str) -> Optional[str]:
+        """Get taxonomy value ID by name"""
+        try:
+            # Get attribute handle
+            attr_info = self.attributes.get(attr_id)
+            if not attr_info:
+                logger.warning(f"No attribute info found for {attr_id}")
+                return None
             
-        # Then try partial match
-        for value_id, value_info in valid_values.items():
-            if value_name in value_info['name'].lower() or value_info['name'].lower() in value_name:
-                logger.debug(f"Partial match found for {value_name}: {value_info['name']}")
-                return value_id
+            attr_handle = attr_info.get('handle')
+            if not attr_handle:
+                logger.warning(f"No handle found for attribute {attr_id}")
+                return None
             
-        # Finally try fuzzy matching
-        best_match = None
-        best_ratio = 0
-        
-        for value_id, value_info in valid_values.items():
-            ratio = SequenceMatcher(None, value_name, value_info['name'].lower()).ratio()
-            if ratio > best_ratio and ratio >= threshold:
-                best_ratio = ratio
-                best_match = value_id
+            # For sizes, map short names to long format
+            if attr_handle == 'size':
+                # Map short names to taxonomy handles
+                size_mappings = {
+                    's': 'small-s',
+                    'm': 'medium-m',
+                    'l': 'large-l',
+                    'xs': 'extra-small-xs',
+                    'xl': 'extra-large-xl',
+                    '2xl': 'double-extra-large-xxl',
+                    '3xl': 'triple-extra-large-xxxl',
+                    '4xl': 'four-extra-large-4xl',
+                    '5xl': 'five-extra-large-5xl'
+                }
+                
+                # Convert short name to long format
+                long_name = size_mappings.get(value_name.lower(), value_name)
+                expected_handle = f"{attr_handle}__{long_name}"
+                logger.debug(f"Looking for size with handle: {expected_handle}")
+                
+                # Search through values
+                for value_id, value_info in self.values.items():
+                    if value_info.get('handle') == expected_handle:
+                        logger.debug(f"Found matching value: {value_id}")
+                        return value_id
+                    
+                logger.warning(f"No size value found with handle {expected_handle}")
+                return None
+            else:
+                # For other attributes, use normal lookup
+                expected_handle = f"{attr_handle}__{value_name.lower().replace(' ', '-')}"
+                for value_id, value_info in self.values.items():
+                    if value_info.get('handle') == expected_handle:
+                        logger.debug(f"Found matching value: {value_id}")
+                        return value_id
+                
+                logger.warning(f"No value found with handle {expected_handle}")
+                return None
             
-        if best_match:
-            logger.debug(f"Fuzzy match found for {value_name}: {valid_values[best_match]['name']} (score: {best_ratio:.2f})")
-            return best_match
-            
-        return None
+        except Exception as e:
+            logger.error(f"Error getting value ID: {str(e)}")
+            return None
 
     def get_attribute_values(self, attribute_id: str) -> List[Dict]:
         """Get all valid values for an attribute with their names and IDs"""
@@ -349,6 +453,96 @@ class TaxonomyMapper:
                 })
         return values
 
+    def get_valid_values(self, attribute_id: str) -> List[Dict[str, str]]:
+        """Get list of valid values for an attribute"""
+        attribute = self.attributes.get(attribute_id, {})
+        return attribute.get('values', [])
+        
+    def get_handle_for_taxonomy_id(self, attribute_type: str, taxonomy_id: str) -> Optional[str]:
+        """Get the handle for a taxonomy ID"""
+        try:
+            # Get value info from values data
+            full_gid = f"gid://shopify/TaxonomyValue/{taxonomy_id}" if not taxonomy_id.startswith('gid://') else taxonomy_id
+            value_info = self.values.get(full_gid)
+            if not value_info:
+                logger.warning(f"No value found for {attribute_type} taxonomy ID {taxonomy_id}")
+                logger.debug(f"Looking for: {full_gid}")
+                logger.debug(f"Available values sample: {list(self.values.keys())[:5]}")
+                return None
+            
+            # Get the handle which contains both attribute and value
+            handle = value_info.get('handle')
+            if not handle or '__' not in handle:
+                logger.warning(f"Invalid handle format in value info: {value_info}")
+                return None
+            
+            logger.debug(f"Found value info: {value_info} for {attribute_type} taxonomy ID {taxonomy_id}")
+            
+            # Return the full handle (e.g. "waist-rise__low")
+            return handle
+            
+        except Exception as e:
+            logger.error(f"Error getting handle for taxonomy ID: {str(e)}")
+            return None
+
+    def get_metaobject_gid(self, taxonomy_value_id: str) -> Optional[str]:
+        """Get metaobject GID for a taxonomy value"""
+        try:
+            # Handle both full GID and ID-only formats
+            if not taxonomy_value_id.startswith('gid://'):
+                full_gid = f"gid://shopify/TaxonomyValue/{taxonomy_value_id}"
+            else:
+                full_gid = taxonomy_value_id
+
+            logger.debug(f"Looking up taxonomy value with GID: {full_gid}")
+            logger.debug(f"Total values loaded: {len(self.values)}")
+            logger.debug(f"Values data keys sample: {list(self.values.keys())[:5]}")
+
+            # Get value info from taxonomy data
+            value_info = self.values.get(full_gid)
+            if not value_info:
+                logger.warning(f"No value found for taxonomy ID {taxonomy_value_id}")
+                return None
+
+            logger.debug(f"Found value info: {value_info}")
+
+            # Get attribute handle and value name
+            handle = value_info.get('handle', '')
+            if not handle or '__' not in handle:
+                logger.warning(f"Invalid handle format: {handle}")
+                return None
+
+            # Split handle into attribute and value parts
+            attr_handle, value_handle = handle.split('__')
+            logger.debug(f"Split handle into: attr={attr_handle}, value={value_handle}")
+
+            # Look up in GID cache - note the cache structure is different
+            attr_values = self.gid_cache.get(attr_handle)
+            if not attr_values:
+                logger.warning(f"No cache entry found for attribute: {attr_handle}")
+                return None
+
+            # Look up value in attribute cache
+            metaobject_gid = attr_values.get(value_handle)
+            if metaobject_gid:
+                logger.debug(f"✅ Found metaobject GID in cache: {metaobject_gid}")
+                return metaobject_gid
+            else:
+                logger.warning(f"No cache entry found for value '{value_handle}' in {attr_handle}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error resolving metaobject GID: {str(e)}")
+            logger.error(f"Stack trace:", exc_info=True)
+            return None
+
+    def get_handle_from_attribute_id(self, attr_id: str) -> Optional[str]:
+        """Get attribute handle from ID"""
+        attr_info = self.attributes.get(attr_id)
+        if attr_info:
+            return attr_info.get('handle')
+        return None
+
 def main():
     """Example usage"""
     mapper = TaxonomyMapper()
@@ -361,7 +555,7 @@ def main():
         print(f"Category GID: {category_id}")
         
         # Get allowed attributes
-        allowed_attrs = mapper.get_allowed_attributes(category_id)
+        allowed_attrs = mapper.get_allowed_attribute_ids(category_id)
         print(f"Allowed attributes: {len(allowed_attrs)}")
         
         # Format some example data

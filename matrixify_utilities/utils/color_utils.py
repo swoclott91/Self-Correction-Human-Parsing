@@ -27,6 +27,12 @@ class ColorExtractor:
         self.background_threshold = 0.85  # Default threshold
 
     @staticmethod
+    def hex_to_rgb(hex_code: str) -> Tuple[int, int, int]:
+        """Convert hex color code to RGB tuple"""
+        hex_code = hex_code.lstrip('#')
+        return tuple(int(hex_code[i:i+2], 16) for i in (0, 2, 4))
+
+    @staticmethod
     def rgb_to_hex(rgb: Tuple[int, int, int]) -> str:
         """Convert RGB tuple to hex string"""
         return '#{:02x}{:02x}{:02x}'.format(*rgb)
@@ -253,4 +259,13 @@ class ColorExtractor:
             'refined_mask': mask,
             'masked_image': masked_img,
             'has_pattern': False
-        } 
+        }
+
+class Color:
+    """Wrapper for hex-based color conversion to RGB, LAB, and HSV"""
+    def __init__(self, hex_code: str):
+        extractor = ColorExtractor()
+        self.hex = hex_code
+        self.rgb = extractor.hex_to_rgb(hex_code)
+        self.lab = extractor.rgb_to_lab(self.rgb)
+        self.hsv = extractor.rgb_to_hsv(self.rgb)

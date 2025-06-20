@@ -1,6 +1,6 @@
 # API Module – Shopify Taxonomy Integration
 
-This module provides the core functionality for updating Shopify product categories and attributes using the **2024-04 Admin API** and the official **Shopify Standard Product Taxonomy**.
+This module provides the core functionality for updating Shopify product categories and attributes using the **2025-04 Admin API** and the official **Shopify Standard Product Taxonomy**.
 
 ---
 
@@ -19,7 +19,7 @@ api/
 ## 🔧 Shopify API Integration
 
 ### API Version
-- **Admin API version**: `2024-04`
+- **Admin API version**: `2025-04`
 - **GraphQL Endpoint**:  
   `https://{your-store}.myshopify.com/admin/api/2024-04/graphql.json`
 
@@ -137,6 +137,6 @@ def update_product_category(product_id: str, category_id: str):
 
 ## 📚 Documentation Reference
 
-[Shopify Admin API (2024-04) – Product Object](https://shopify.dev/docs/api/admin-graphql/2024-04/objects/Product#field-product-category)
+[Shopify Admin API (2025-04) – Product Object](https://shopify.dev/docs/api/admin-graphql/latest/objects/Product#field-product-category)
 
 ---

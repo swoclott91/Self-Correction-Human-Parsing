@@ -46,7 +46,7 @@ class SeasonMatch(NamedTuple):
     explanation: str
 
 class Season(Enum):
-    SPRING_BRIGHT = "Bright Spring"
+    SPRING_CLEAR = "Clear Spring"
     SPRING_LIGHT = "Light Spring"
     SPRING_WARM = "Warm Spring"
     SUMMER_LIGHT = "Light Summer"
@@ -57,11 +57,7 @@ class Season(Enum):
     AUTUMN_DEEP = "Deep Autumn"
     WINTER_DEEP = "Deep Winter"
     WINTER_COOL = "Cool Winter"
-    WINTER_BRIGHT = "Bright Winter"
-    SPRING = "spring"
-    SUMMER = "summer" 
-    AUTUMN = "autumn"
-    WINTER = "winter"
+    WINTER_CLEAR = "Clear Winter"
 
 @dataclass
 class SeasonalCharacteristics:
@@ -95,7 +91,7 @@ class PaletteClassifier:
     VERY_LIGHT = -0.8
     NEUTRAL_CHROMA = 0.2
 
-    def __init__(self, use_rules: bool = True, sigma: float = 25.0):
+    def __init__(self, use_rules: bool = True, sigma: float = 35.0):
         """Initialize classifier
         
         Args:
@@ -124,7 +120,7 @@ class PaletteClassifier:
         # Reference colors for each season (RGB values)
         self.reference_colors = {
             # Springs: Warm and Clear
-            Season.SPRING_BRIGHT: [
+            Season.SPRING_CLEAR: [
                 (255, 122, 0),  # Bright Orange
                 (255, 196, 0),  # Sunny Yellow
                 (255, 128, 142), # Coral Pink
@@ -185,7 +181,7 @@ class PaletteClassifier:
                 (150, 0, 100),   # Cool Purple
                 (0, 128, 128),   # Teal
             ],
-            Season.WINTER_BRIGHT: [
+            Season.WINTER_CLEAR: [
                 (0, 150, 255),   # Bright Blue
                 (255, 0, 150),   # Bright Pink
                 (0, 200, 200),   # Bright Turquoise
@@ -252,41 +248,31 @@ class PaletteClassifier:
         a_weight = abs(a) / (abs(a) + abs(b)) if (abs(a) + abs(b)) > 0 else 0.5
         b_weight = 1 - a_weight
         
-        temperature = (
-            (a * a_weight / 127) +  # Red-green contribution
-            (b * b_weight / 127)    # Yellow-blue contribution
-        )
-        
-        # Calculate other characteristics
+        # Calculate characteristics
+        temperature = self._calculate_temperature(a, b)
         brightness = self._calculate_brightness(L, chroma)
-        depth = self._calculate_depth(L)
+        depth = self._calculate_depth(L, chroma)  # Pass chroma to depth calculation
         
-        # Determine quadrant with soft boundaries
+        # Determine if color is neutral
         is_neutral = chroma < self.NEUTRAL_CHROMA
-        if is_neutral:
-            if temperature > 0.2:
-                quadrant = "Neutral-warm zone"
-            elif temperature < -0.2:
-                quadrant = "Neutral-cool zone"
-            else:
-                quadrant = "Neutral zone"
-        else:
-            if temperature > 0.2:
-                quadrant = "Warm zone"
-            elif temperature < -0.2:
-                quadrant = "Cool zone"
-            else:
-                quadrant = "Neutral zone"
+        
+        # Determine color quadrant
+        quadrant = self._determine_quadrant(a, b)
+        
+        # Generate explanation
+        explanation = self._generate_explanation(
+            temperature, brightness, depth, is_neutral, quadrant
+        )
         
         return ColorAnalysis(
             temperature=temperature,
             brightness=brightness,
             depth=depth,
             chroma=chroma,
-            lightness=L/100,
+            lightness=L/100,  # Normalize L to 0-1 range
             is_neutral=is_neutral,
             quadrant=quadrant,
-            explanation=f"LAB: ({L:.1f}, {a:.1f}, {b:.1f})"
+            explanation=explanation
         )
 
     def _calculate_season_similarity(self, color_chars: SeasonalCharacteristics, season_chars: SeasonalCharacteristics) -> float:
@@ -508,10 +494,174 @@ class PaletteClassifier:
         
         return np.clip(brightness, -1, 1)
 
-    def _calculate_depth(self, L: float) -> float:
-        """Calculate depth characteristic from lightness"""
-        normalized_L = L/100
-        depth = (1.0 - normalized_L) * 2 - 1
+    def _calculate_temperature(self, a: float, b: float) -> float:
+        """Calculate color temperature from LAB a and b values
+        
+        Args:
+            a: LAB a value (-128 to +127)
+            b: LAB b value (-128 to +127)
+            
+        Returns:
+            Temperature score from -1 (cool) to +1 (warm)
+        """
+        # Normalize a and b to [-1, 1] range
+        a_norm = a / 127
+        b_norm = b / 127
+        
+        # Calculate weighted temperature
+        # Positive a = red (warm)
+        # Positive b = yellow (warm)
+        # Negative a = green (cool)
+        # Negative b = blue (cool)
+        temp = (a_norm + b_norm) / 2
+        
+        # Log temperature calculation for debugging
+        logger.debug(
+            f"Temperature calculation: a={a:.1f}, b={b:.1f}, "
+            f"a_norm={a_norm:.2f}, b_norm={b_norm:.2f}, "
+            f"temp={temp:.2f}"
+        )
+        
+        return np.clip(temp, -1, 1)
+
+    def _determine_quadrant(self, a: float, b: float) -> str:
+        """Determine the color quadrant based on LAB a and b values
+        
+        Args:
+            a: LAB a value (-128 to +127)
+            b: LAB b value (-128 to +127)
+            
+        Returns:
+            String describing the color quadrant
+        """
+        # Normalize a and b to [-1, 1] range
+        a_norm = a / 127
+        b_norm = b / 127
+        
+        # Determine quadrant with soft boundaries
+        if abs(a_norm) < 0.2 and abs(b_norm) < 0.2:
+            return "Neutral zone"
+            
+        if a_norm > 0.2:  # Red
+            if b_norm > 0.2:  # Yellow
+                return "Warm zone (red-yellow)"
+            elif b_norm < -0.2:  # Blue
+                return "Cool zone (red-blue)"
+            else:
+                return "Warm zone (red)"
+        elif a_norm < -0.2:  # Green
+            if b_norm > 0.2:  # Yellow
+                return "Warm zone (green-yellow)"
+            elif b_norm < -0.2:  # Blue
+                return "Cool zone (green-blue)"
+            else:
+                return "Cool zone (green)"
+        else:  # Neutral a
+            if b_norm > 0.2:
+                return "Warm zone (yellow)"
+            elif b_norm < -0.2:
+                return "Cool zone (blue)"
+            else:
+                return "Neutral zone"
+        
+        # Log quadrant determination for debugging
+        logger.debug(
+            f"Quadrant determination: a={a:.1f}, b={b:.1f}, "
+            f"a_norm={a_norm:.2f}, b_norm={b_norm:.2f}"
+        )
+
+    def _generate_explanation(self, temperature: float, brightness: float, 
+                            depth: float, is_neutral: bool, quadrant: str) -> str:
+        """Generate a human-readable explanation of color characteristics
+        
+        Args:
+            temperature: Temperature score (-1 to +1)
+            brightness: Brightness score (-1 to +1)
+            depth: Depth score (-1 to +1)
+            is_neutral: Whether the color is neutral
+            quadrant: Color quadrant description
+            
+        Returns:
+            String explaining the color's characteristics
+        """
+        # Build explanation components
+        components = []
+        
+        # Temperature description
+        if abs(temperature) < 0.2:
+            temp_desc = "neutral temperature"
+        else:
+            temp_desc = "warm" if temperature > 0 else "cool"
+            if abs(temperature) > 0.8:
+                temp_desc = f"very {temp_desc}"
+        components.append(temp_desc)
+        
+        # Brightness description
+        if abs(brightness) < 0.2:
+            bright_desc = "moderate brightness"
+        else:
+            bright_desc = "bright" if brightness > 0 else "soft"
+            if abs(brightness) > 0.8:
+                bright_desc = f"very {bright_desc}"
+        components.append(bright_desc)
+        
+        # Depth description
+        if abs(depth) < 0.2:
+            depth_desc = "moderate depth"
+        else:
+            depth_desc = "deep" if depth > 0 else "light"
+            if abs(depth) > 0.8:
+                depth_desc = f"very {depth_desc}"
+        components.append(depth_desc)
+        
+        # Neutral description
+        if is_neutral:
+            components.append("neutral color")
+        
+        # Combine components
+        explanation = f"{quadrant}, {', '.join(components)}"
+        
+        # Log explanation generation for debugging
+        logger.debug(
+            f"Explanation generation: temp={temperature:.2f}, "
+            f"bright={brightness:.2f}, depth={depth:.2f}, "
+            f"is_neutral={is_neutral}, quadrant={quadrant}"
+        )
+        
+        return explanation
+
+    def _calculate_depth(self, L: float, chroma: float = 0.0) -> float:
+        """Calculate color depth based on lightness and chroma
+        
+        Args:
+            L: Lightness value (0-100)
+            chroma: Color chroma (0-1)
+            
+        Returns:
+            Depth score from -1 (light) to +1 (deep)
+        """
+        # Base depth calculation from lightness
+        normalized_L = L / 100
+        base_depth = (1.0 - normalized_L) * 2 - 1
+        
+        # Boost depth for dark colors (L < 45)
+        if L < 45:
+            dark_boost = (45 - L) / 45  # 0 to 1 based on how dark
+            base_depth = base_depth * (1 + dark_boost * 0.5)  # Up to 50% boost
+            
+        # Incorporate chroma to strengthen depth for saturated colors
+        # Higher chroma increases depth perception
+        chroma_factor = 1 + (chroma * 0.4)  # Up to 40% boost from chroma
+        
+        # Combine factors and ensure result stays in [-1, 1]
+        depth = base_depth * chroma_factor
+        
+        # Log depth calculation details for debugging
+        logger.debug(
+            f"Depth calculation: L={L:.1f}, chroma={chroma:.2f}, "
+            f"base_depth={base_depth:.2f}, final_depth={depth:.2f}"
+        )
+        
         return np.clip(depth, -1, 1)
 
     def calculate_delta_e(self, lab1: Tuple[float, float, float], 
@@ -693,24 +843,45 @@ class PaletteClassifier:
         for url, img in downloaded_images.items():
             try:
                 if img:
-                    # TODO: Implement actual color analysis
-                    results[url] = ColorSeason(
-                        season=Season.SPRING,
-                        confidence=0.85,
-                        explanation="Placeholder classification - actual analysis to be implemented"
+                    # Convert PIL Image to RGB values
+                    rgb_img = np.array(img)
+                    # Create ColorInfo object for the dominant color
+                    color_info = ColorInfo(
+                        rgb=tuple(rgb_img.mean(axis=(0,1)).astype(int)),
+                        hex='#000000',  # This will be set by ColorInfo
+                        lab=(0,0,0),    # This will be set by ColorInfo
+                        hsv=(0,0,0)     # This will be set by ColorInfo
                     )
+                    
+                    # Use our existing color classification logic
+                    season_matches = self.classify_color(color_info)
+                    if season_matches:
+                        best_match = season_matches[0]  # Get highest confidence match
+                        results[url] = ColorSeason(
+                            season=best_match.season,
+                            confidence=best_match.confidence,
+                            explanation=best_match.explanation
+                        )
+                    else:
+                        logger.warning(f"No season matches found for {url}")
+                        results[url] = ColorSeason(
+                            season=Season.SPRING_CLEAR,
+                            confidence=0.5,
+                            explanation="No confident matches found"
+                        )
                 else:
+                    logger.warning(f"Failed to download image {url}")
                     results[url] = ColorSeason(
-                        season=Season.SPRING,
+                        season=Season.SPRING_CLEAR,
                         confidence=0.5,
-                        explanation="Error downloading image, using default classification"
+                        explanation="Error downloading image"
                     )
             except Exception as e:
                 logger.error(f"Error analyzing image {url}: {e}")
                 results[url] = ColorSeason(
-                    season=Season.SPRING,
+                    season=Season.SPRING_CLEAR,
                     confidence=0.5,
-                    explanation="Error analyzing image, using default classification"
+                    explanation=f"Error during analysis: {str(e)}"
                 )
                 
         return results
@@ -718,4 +889,90 @@ class PaletteClassifier:
     def classify_image_url(self, image_url: str) -> Optional[ColorSeason]:
         """Analyze a single image from URL"""
         results = self.classify_image_urls_batch([image_url])
-        return results.get(image_url) 
+        return results.get(image_url)
+
+    def _get_season_category(self, season: Season) -> str:
+        """Get the category of a season (Bright, Soft, Light, Deep, etc.)"""
+        if season in [Season.SPRING_CLEAR, Season.WINTER_CLEAR]:
+            return "Bright"
+        elif season in [Season.SPRING_LIGHT, Season.SUMMER_LIGHT]:
+            return "Light"
+        elif season in [Season.AUTUMN_SOFT, Season.SUMMER_SOFT]:
+            return "Soft"
+        elif season in [Season.AUTUMN_DEEP, Season.WINTER_DEEP]:
+            return "Deep"
+        elif season in [Season.SPRING_WARM, Season.AUTUMN_WARM]:
+            return "Warm"
+        elif season in [Season.SUMMER_COOL, Season.WINTER_COOL]:
+            return "Cool"
+        return "Neutral"
+
+    def _get_season_adjacency_map(self) -> Dict[Season, List[Season]]:
+        """Get the adjacency map for seasons based on the 12-season color wheel"""
+        return {
+            # Spring seasons
+            Season.SPRING_CLEAR: [Season.SPRING_LIGHT, Season.SPRING_WARM],
+            Season.SPRING_LIGHT: [Season.SPRING_CLEAR, Season.SPRING_WARM, Season.SUMMER_LIGHT],
+            Season.SPRING_WARM: [Season.SPRING_CLEAR, Season.SPRING_LIGHT, Season.AUTUMN_WARM],
+            
+            # Summer seasons
+            Season.SUMMER_LIGHT: [Season.SPRING_LIGHT, Season.SUMMER_SOFT],
+            Season.SUMMER_SOFT: [Season.SUMMER_LIGHT, Season.SUMMER_COOL, Season.AUTUMN_SOFT],
+            Season.SUMMER_COOL: [Season.SUMMER_SOFT, Season.WINTER_COOL],
+            
+            # Autumn seasons
+            Season.AUTUMN_WARM: [Season.SPRING_WARM, Season.AUTUMN_SOFT],
+            Season.AUTUMN_SOFT: [Season.AUTUMN_WARM, Season.AUTUMN_DEEP, Season.SUMMER_SOFT],
+            Season.AUTUMN_DEEP: [Season.AUTUMN_SOFT, Season.WINTER_DEEP],
+            
+            # Winter seasons
+            Season.WINTER_DEEP: [Season.AUTUMN_DEEP, Season.WINTER_COOL],
+            Season.WINTER_COOL: [Season.WINTER_DEEP, Season.WINTER_CLEAR, Season.SUMMER_COOL],
+            Season.WINTER_CLEAR: [Season.WINTER_COOL, Season.SPRING_CLEAR]
+        }
+
+    def should_allow_season_pair(self, season_a: Season, season_b: Season, chroma_a: float, chroma_b: float) -> bool:
+        """Determine if two seasons should be allowed to be paired together.
+        
+        Args:
+            season_a: First season
+            season_b: Second season
+            chroma_a: Chroma value for first season's color
+            chroma_b: Chroma value for second season's color
+            
+        Returns:
+            bool: True if the seasons should be allowed to be paired
+        """
+        # Same season is always allowed
+        if season_a == season_b:
+            return True
+            
+        # Get season categories
+        category_a = self._get_season_category(season_a)
+        category_b = self._get_season_category(season_b)
+        
+        # Disallow Bright + Soft pairings
+        if (category_a == "Bright" and category_b == "Soft") or \
+           (category_a == "Soft" and category_b == "Bright"):
+            logger.debug(f"Rejecting {season_a.value} + {season_b.value}: Bright + Soft pairing")
+            return False
+            
+        # Check chroma difference
+        chroma_diff = abs(chroma_a - chroma_b)
+        if chroma_diff > 0.25:
+            logger.debug(f"Rejecting {season_a.value} + {season_b.value}: Chroma difference {chroma_diff:.2f} > 0.25")
+            return False
+            
+        # Check adjacency
+        adjacency_map = self._get_season_adjacency_map()
+        if season_b in adjacency_map.get(season_a, []):
+            logger.debug(f"Allowing {season_a.value} + {season_b.value}: Adjacent seasons")
+            return True
+            
+        # Allow seasons that share temperature and brightness category
+        if category_a == category_b:
+            logger.debug(f"Allowing {season_a.value} + {season_b.value}: Same category ({category_a})")
+            return True
+            
+        logger.debug(f"Rejecting {season_a.value} + {season_b.value}: Not adjacent and different categories")
+        return False 

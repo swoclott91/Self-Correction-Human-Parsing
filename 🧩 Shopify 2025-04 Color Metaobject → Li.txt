@@ -1,0 +1,191 @@
+🧩 Shopify 2025-04 Color Metaobject → Linked Option Value (Complete Flow)
+This guide walks through:
+
+Creating the metaobject entry for the color
+
+Ensuring the metafield definition exists
+
+Linking the metafield to the "Color" product option
+
+Linking the metaobject to an option value (e.g., "Lt Denim")
+
+🔷 STEP 1: Create the Metaobject (Color Pattern)
+Create or reuse a unique color metaobject (e.g. Lt Denim with hex #A8B9CB)
+
+graphql
+Copy
+Edit
+mutation {
+  metaobjectCreate(metaobject: {
+    type: "shopify--color-pattern",
+    handle: "lt-denim-a8b9cb",  # unique identifier
+    fields: [
+      { key: "label", value: "Lt Denim" },
+      { key: "color", value: "#A8B9CB" },
+      { key: "color_taxonomy_reference", value: "[\"gid://shopify/TaxonomyValue/2\"]" },  # Blue
+      { key: "pattern_taxonomy_reference", value: "gid://shopify/TaxonomyValue/2874" }   # Solid
+    ]
+  }) {
+    metaobject {
+      id
+      handle
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+🔷 STEP 2: Ensure Metafield Definition Exists
+You need a metafield definition with key color-pattern and type list.metaobject_reference.
+
+graphql
+Copy
+Edit
+mutation {
+  metafieldDefinitionCreate(definition: {
+    name: "Color Pattern",
+    key: "color-pattern",
+    namespace: "shopify",
+    ownerType: PRODUCT,
+    type: "list.metaobject_reference",
+    access: {
+      adminAccess: MERCHANT_READ_WRITE,
+      storefrontAccess: STOREFRONT_READ
+    }
+  }) {
+    metafieldDefinition {
+      id
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+Skip if already defined — you can query it like this:
+
+graphql
+Copy
+Edit
+query {
+  metafieldDefinitions(first: 10, ownerType: PRODUCT) {
+    nodes {
+      namespace
+      key
+      type {
+        name
+      }
+    }
+  }
+}
+🔷 STEP 3: Link the Metafield to the Product Option
+You must connect the color-pattern metafield to the "Color" option using productOptionUpdate.
+
+graphql
+Copy
+Edit
+mutation {
+  productOptionUpdate(
+    productId: "gid://shopify/Product/PRODUCT_ID",
+    option: {
+      id: "gid://shopify/ProductOption/COLOR_OPTION_ID",
+      linkedMetafield: {
+        namespace: "shopify",
+        key: "color-pattern"
+      }
+    }
+  ) {
+    product {
+      id
+      options {
+        id
+        name
+        linkedMetafield {
+          namespace
+          key
+        }
+      }
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+Use the query below to get the ProductOption ID for "Color":
+
+graphql
+Copy
+Edit
+query {
+  product(id: "gid://shopify/Product/PRODUCT_ID") {
+    options {
+      id
+      name
+    }
+  }
+}
+🔷 STEP 4: Assign the Metaobject to an Option Value
+Now that the metafield is linked to the option, assign a specific metaobject to the value (e.g., "Lt Denim")
+
+graphql
+Copy
+Edit
+mutation {
+  productOptionUpdate(
+    productId: "gid://shopify/Product/PRODUCT_ID",
+    option: {
+      id: "gid://shopify/ProductOption/COLOR_OPTION_ID"
+    },
+    optionValuesToUpdate: [
+      {
+        id: "gid://shopify/ProductOptionValue/OPTION_VALUE_ID",
+        linkedMetafieldValue: "gid://shopify/Metaobject/216221352308"
+      }
+    ]
+  ) {
+    product {
+      options {
+        name
+        optionValues {
+          name
+          linkedMetafieldValue
+        }
+      }
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+To find the ProductOptionValue IDs:
+
+graphql
+Copy
+Edit
+query {
+  product(id: "gid://shopify/Product/PRODUCT_ID") {
+    options {
+      id
+      name
+      optionValues {
+        id
+        name
+      }
+    }
+  }
+}
+📌 Claude Prompt Summary
+“Claude, you’re working with the Shopify Admin GraphQL API version 2025-04. Shopify now supports assigning metaobject_reference values to product option values (like "Color": "Lt Denim") using productOptionUpdate. You must:
+
+Create the metaobject using metaobjectCreate.
+
+Ensure a metafield definition exists with key color-pattern and type list.metaobject_reference.
+
+Link that metafield to the "Color" option using productOptionUpdate.
+
+Use the optionValuesToUpdate top-level argument to assign the corresponding metaobject GID to the value "Lt Denim" (or others). Don’t use metafieldsSet, and don’t update variants individually. This is the new canonical method.”
+
+Would you like this exported as a Markdown or .txt file for direct use in your workspace or Claude's memory context?

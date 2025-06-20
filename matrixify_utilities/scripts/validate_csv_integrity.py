@@ -63,7 +63,7 @@ def validate_csv(file_path: str) -> dict:
         # Check for required metafields
         metafield_cols = [
             'Metafield: shopify.color-pattern [list.metaobject_reference]',
-            'Variant Metafield: custom.pallet [list.metaobject_reference]'
+            'Variant Metafield: custom.palette [list.metaobject_reference]'
         ]
         for col in metafield_cols:
             if col not in df.columns:

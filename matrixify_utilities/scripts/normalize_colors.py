@@ -385,7 +385,7 @@ class ColorNormalizer:
                     if color_name in color_cache:
                         cached = color_cache[color_name]
                         # Set color season metafield
-                        df.loc[variant.name, 'Variant Metafield: custom.pallet [list.metaobject_reference]'] = cached['color_season']
+                        df.loc[variant.name, 'Variant Metafield: custom.palette [list.metaobject_reference]'] = cached['color_season']
                         
                         # Track change
                         color_changes.append({
@@ -564,7 +564,7 @@ class ColorNormalizer:
 
     def format_season_handle(self, season_name: str) -> str:
         """Convert season name to handle format"""
-        return f"pallet.{season_name.lower().replace(' ', '-')}"
+        return f"palette.{season_name.lower().replace(' ', '-')}"
 
     def get_season_handles(self, season_results: dict) -> str:
         """Get formatted handles for primary seasons only"""

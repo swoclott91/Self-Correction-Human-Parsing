@@ -48,58 +48,47 @@ class ProductEnricher:
         self.mapper = TaxonomyMapper(taxonomy_dir)
         self.confidence_threshold = confidence_threshold
         
-    def enrich_product(self, 
-                      product_id: str,
-                      title: str,
-                      description: str = "",
-                      skip_low_confidence: bool = True) -> EnrichmentResult:
-        """
-        Enrich a product with category and attribute data
-        
-        Args:
-            product_id: Shopify product ID (with gid:// prefix)
-            title: Product title
-            description: Product description (optional)
-            skip_low_confidence: Skip enrichment if confidence below threshold
-            
-        Returns:
-            EnrichmentResult object containing enrichment data and status
-        """
-        result = EnrichmentResult(product_id=product_id)
-        
+    def enrich_product(self, product: Dict) -> EnrichmentResult:
+        """Enrich a single product with category and attributes"""
         try:
-            # Get category and confidence
-            category_path, confidence = self.categorizer.categorize(title, description)
-            result.category_path = category_path
-            result.confidence = confidence
+            # Extract product info
+            product_id = product['product_id']
+            title = product['title']
+            description = product.get('description', '')
             
-            # Check confidence threshold
-            if skip_low_confidence and confidence < self.confidence_threshold:
-                result.errors.append(
-                    f"Low confidence ({confidence:.2f}) below threshold "
-                    f"({self.confidence_threshold})"
-                )
-                return result
-            
-            # Get category ID
-            category_id = self.mapper.get_category_id_from_path(category_path)
-            if not category_id:
-                result.errors.append(f"Failed to map path to category ID: {category_path}")
-                return result
-            result.category_id = category_id
-            
-            # Get suggested attributes
+            # Get suggested attributes (includes category)
             attributes = self.categorizer.get_suggested_attributes(title, description)
-            if not attributes:
-                logger.warning(f"No attributes found for product {product_id}")
-            result.attributes = attributes
+            
+            if not attributes or 'category' not in attributes:
+                return EnrichmentResult(
+                    product_id=product_id,
+                    errors=["No category found"]
+                )
+            
+            # Extract category info
+            category_info = attributes.pop('category')
+            
+            # Create result
+            result = EnrichmentResult(
+                product_id=product_id,
+                category_id=category_info['gid'],
+                category_path=category_info['path'],
+                confidence=category_info['confidence'],
+                attributes=attributes
+            )
+            
+            # Add debug logging
+            logger.debug(f"Category info: {category_info}")
+            logger.debug(f"Attributes: {attributes}")
             
             return result
             
         except Exception as e:
-            logger.error(f"Error enriching product {product_id}: {str(e)}")
-            result.errors.append(f"Enrichment error: {str(e)}")
-            return result
+            logger.error(f"Error enriching product {product.get('product_id')}: {str(e)}")
+            return EnrichmentResult(
+                product_id=product.get('product_id'),
+                errors=[str(e)]
+            )
     
     def format_graphql_payload(self, result: EnrichmentResult) -> Optional[Dict]:
         """
@@ -123,50 +112,83 @@ class ProductEnricher:
             logger.error(f"Error formatting GraphQL payload: {str(e)}")
             return None
     
-    def batch_enrich_products(self, 
-                            products: List[Dict],
-                            skip_low_confidence: bool = True) -> Tuple[List[Dict], List[Dict]]:
-        """
-        Enrich multiple products
-        
-        Args:
-            products: List of dicts with product_id, title, description
-            skip_low_confidence: Skip products with low categorization confidence
-            
-        Returns:
-            Tuple of (successful_payloads, failed_results)
-        """
-        successful_payloads = []
-        failed_results = []
+    def batch_enrich_products(self, products: List[Dict], skip_low_confidence: bool = True) -> Tuple[List[Dict], List[Dict]]:
+        """Enrich multiple products"""
+        successful = []
+        failed = []
         
         for product in products:
             try:
-                # Enrich product
-                result = self.enrich_product(
-                    product_id=product['product_id'],
-                    title=product['title'],
-                    description=product.get('description', ''),
-                    skip_low_confidence=skip_low_confidence
+                # Get enrichment data
+                attributes = self.categorizer.get_suggested_attributes(
+                    product['title'],
+                    product.get('description', ''),
+                    product  # Pass the full product object
                 )
                 
-                # Format payload if valid
-                if result.is_valid:
-                    payload = self.format_graphql_payload(result)
-                    if payload:
-                        successful_payloads.append(payload)
-                    else:
-                        failed_results.append(result.to_dict())
-                else:
-                    failed_results.append(result.to_dict())
+                if not attributes:
+                    failed.append(product)
+                    continue
                     
-            except Exception as e:
-                logger.error(f"Error processing product {product.get('product_id')}: {str(e)}")
-                failed_results.append({
-                    'product_id': product.get('product_id'),
-                    'errors': [str(e)]
-                })
+                # Format payload
+                payload = {
+                    'id': product['product_id'],
+                    'category': attributes.pop('category')['gid']  # Remove category and get GID
+                }
                 
-        return successful_payloads, failed_results
+                # Add remaining attributes
+                payload.update(attributes)  # Add all other attributes directly
+                    
+                successful.append(payload)
+                
+            except Exception as e:
+                logger.error(f"Failed to enrich product {product.get('title')}: {str(e)}")
+                failed.append(product)
+                
+        return successful, failed
+
+    def get_product_attributes(self, product: Dict) -> Dict:
+        """Get suggested attributes for a product"""
+        # Get category first
+        category_id, confidence = self.categorizer.categorize(
+            product['title'],
+            product.get('description', '')
+        )
+        
+        if not category_id:
+            logger.warning("No category found")
+            return {}
+        
+        # Get category path
+        category_path = self.mapper.get_path_from_category_id(category_id)
+        
+        # Get allowed attributes for category
+        allowed_attrs = self.mapper.get_allowed_attribute_ids(category_id)
+        logger.debug(f"Allowed attributes: {allowed_attrs}")
+        
+        # Build attributes dict
+        attributes = {
+            'category': {
+                'gid': category_id,
+                'path': category_path,
+                'confidence': confidence
+            }
+        }
+        
+        # Add attribute values
+        for attr_id in allowed_attrs:
+            value = self.categorizer._get_attribute_value(
+                product['title'],
+                product.get('description', ''),
+                attr_id,
+                product
+            )
+            if value:
+                attributes[attr_id] = value
+                logger.debug(f"Added attribute {attr_id}: {value}")
+        
+        logger.debug(f"Final attributes: {attributes}")
+        return attributes
 
 def main():
     """Example usage"""

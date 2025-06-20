@@ -1,19 +1,54 @@
-import json
-from pathlib import Path
-from typing import Dict, Set, List
 import logging
-import sys
+from pathlib import Path
+import json
 from pprint import pprint
 from matrixify_utilities.scripts.taxonomy_mapper import TaxonomyMapper
+from matrixify_utilities.scripts.clothing_categorizer import ClothingCategorizer
 
 logger = logging.getLogger(__name__)
 
-def load_json_file(file_path: Path) -> dict:
-    """Load and parse a JSON file"""
-    with open(file_path, 'r', encoding='utf-8') as f:
+def load_json_file(filepath: Path) -> dict:
+    """Load and parse JSON file"""
+    with open(filepath) as f:
         return json.load(f)
 
-def analyze_taxonomy_coverage():
+def analyze_category_coverage():
+    """Analyze which categories are covered and which are missing"""
+    mapper = TaxonomyMapper()
+    
+    # Get all available categories from taxonomy
+    all_categories = set()
+    for category in mapper.categories.values():
+        if isinstance(category, dict) and category.get('path', '').startswith('Apparel & Accessories'):
+            path = category['path'].replace('Apparel & Accessories > ', '')
+            all_categories.add(path)
+    
+    # Get currently covered categories
+    covered_categories = set(ClothingCategorizer.CATEGORY_KEYWORDS.keys())
+    
+    # Find missing categories
+    missing_categories = all_categories - covered_categories
+    
+    # Print analysis
+    print("\nCategory Coverage Analysis:")
+    print("==========================")
+    print("\nCurrently Covered Categories:")
+    for category in sorted(covered_categories):
+        print(f"- {category}")
+        print(f"  Keywords: {', '.join(ClothingCategorizer.CATEGORY_KEYWORDS[category])}")
+    
+    print("\nMissing Categories:")
+    for category in sorted(missing_categories):
+        print(f"- {category}")
+        # Suggest some keywords based on category name
+        suggested_keywords = []
+        words = category.lower().replace('&', 'and').split()
+        suggested_keywords.append(category.lower())
+        if len(words) > 1:
+            suggested_keywords.extend([w for w in words if len(w) > 3])
+        print(f"  Suggested keywords: {', '.join(suggested_keywords)}")
+
+def analyze_attribute_coverage():
     """Analyze coverage of taxonomy attributes in ATTRIBUTE_PATTERNS"""
     
     # Initialize TaxonomyMapper
@@ -80,7 +115,6 @@ def analyze_taxonomy_coverage():
     pprint(taxonomy_mapping)
     
     # Import ClothingCategorizer
-    from matrixify_utilities.scripts.clothing_categorizer import ClothingCategorizer
     current_patterns = ClothingCategorizer.ATTRIBUTE_PATTERNS
     logger.debug(f"Loaded {len(current_patterns)} patterns from ATTRIBUTE_PATTERNS")
     
@@ -104,6 +138,19 @@ def analyze_taxonomy_coverage():
                     suggested_regex = f"r\"{value.lower()}|{value.lower().replace(' ', '[- ]')}\""
                     print(f"    Suggested regex: {suggested_regex}")
 
+def main():
+    """Run the analysis"""
+    import argparse
+    parser = argparse.ArgumentParser(description='Analyze taxonomy coverage')
+    parser.add_argument('--type', choices=['categories', 'attributes', 'all'], 
+                       default='all', help='Type of analysis to run')
+    args = parser.parse_args()
+    
+    if args.type in ['categories', 'all']:
+        analyze_category_coverage()
+    if args.type in ['attributes', 'all']:
+        analyze_attribute_coverage()
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
-    analyze_taxonomy_coverage()
+    main()
