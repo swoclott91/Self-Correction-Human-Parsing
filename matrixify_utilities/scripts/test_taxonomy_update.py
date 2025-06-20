@@ -149,7 +149,7 @@ def main():
 
 if __name__ == "__main__":
     # Test values
-    ACCESS_TOKEN = "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"
+    ACCESS_TOKEN = ""
     SHOP_URL = "color-couturier.myshopify.com"
     CATEGORY_ID = "gid://shopify/TaxonomyCategory/aa"  # Apparel & Accessories
     
