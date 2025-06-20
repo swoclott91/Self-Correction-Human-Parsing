@@ -12,7 +12,7 @@ import json
 load_dotenv()
 
 # Set API credentials directly
-SHOPIFY_API_KEY = "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"
+SHOPIFY_API_KEY = ""
 SHOPIFY_SHOP_URL = "color-couturier.myshopify.com"
 SHOPIFY_API_URL = f"https://{SHOPIFY_SHOP_URL}/admin/api/2024-01/graphql.json"
 
